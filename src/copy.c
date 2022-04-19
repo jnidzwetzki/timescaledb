@@ -49,7 +49,7 @@
  * Copy from a file to a hypertable.
  *
  * Unfortunately, there aren't any good hooks in the regular COPY code to insert
- * our chunk dispatching. so most of this code is a straight-up copy of the
+ * our chunk dispatching. So, most of this code is a straight-up copy of the
  * regular PostgreSQL source code for the COPY command (command/copy.c), albeit
  * with minor modifications.
  *
@@ -139,8 +139,9 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		.arg = arg,
 	};
 	CommandId mycid = GetCurrentCommandId(true);
+	CopyInsertMethod insertMethod;
 	int ti_options = 0; /* start with default options for insert */
-	BulkInsertState bistate;
+	BulkInsertState bistate = NULL;
 	uint64 processed = 0;
 	ExprState *qualexpr = NULL;
 	ChunkDispatch *dispatch = ccstate->dispatch;
@@ -298,9 +299,13 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 
 		CHECK_FOR_INTERRUPTS();
 
-		/* Reset the per-tuple exprcontext */
+		/*
+		 * Reset the per-tuple exprcontext. We do this after every tuple, to
+		 * clean-up after expression evaluations etc.
+		 */
 		ResetPerTupleExprContext(estate);
 		myslot = singleslot;
+		Assert(myslot != NULL);
 
 		/* Switch into its memory context */
 		MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));

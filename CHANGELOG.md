@@ -10,6 +10,7 @@ accidentally triggering the load of a previous DB version.**
 * #4120 Add logging for retention policy
 * #4169 Add support for chunk exclusion on DELETE to PG14
 * #4209 Add support for chunk exclusion on UPDATE to PG14
+* #4080 Adopt multi-insert support for COPY
 
 **Bugfixes**
 * #4225 Fix TRUNCATE error as non-owner on hypertable
