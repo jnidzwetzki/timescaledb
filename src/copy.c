@@ -55,6 +55,64 @@
  *
  */
 
+
+/*
+ * No more than this many tuples per CopyMultiInsertBuffer
+ *
+ * Caution: Don't make this too big, as we could end up with this many
+ * CopyMultiInsertBuffer items stored in CopyMultiInsertInfo's
+ * multiInsertBuffers list.  Increasing this can cause quadratic growth in
+ * memory requirements during copies into partitioned tables with a large
+ * number of partitions.
+ */
+#define MAX_BUFFERED_TUPLES		1000
+
+/*
+ * Flush buffers if there are >= this many bytes, as counted by the input
+ * size, of tuples stored.
+ */
+#define MAX_BUFFERED_BYTES		65535
+
+/* Trim the list of buffers back down to this number after flushing */
+#define MAX_PARTITION_BUFFERS	32
+
+/* Stores multi-insert data related to a single relation in CopyFrom. */
+typedef struct CopyMultiInsertBuffer
+{
+	TupleTableSlot *slots[MAX_BUFFERED_TUPLES]; /* Array to store tuples */
+	ResultRelInfo *resultRelInfo;	/* ResultRelInfo for 'relid' */
+	BulkInsertState bistate;	/* BulkInsertState for this rel */
+	int			nused;			/* number of 'slots' containing tuples */
+	uint64		linenos[MAX_BUFFERED_TUPLES];	/* Line # of tuple in copy
+												 * stream */
+} CopyMultiInsertBuffer;
+
+/*
+ * Stores one or many CopyMultiInsertBuffers and details about the size and
+ * number of tuples which are stored in them.  This allows multiple buffers to
+ * exist at once when COPYing into a partitioned table.
+ */
+typedef struct CopyMultiInsertInfo
+{
+	List	   *multiInsertBuffers; /* List of tracked CopyMultiInsertBuffers */
+	int			bufferedTuples; /* number of tuples buffered over all buffers */
+	int			bufferedBytes;	/* number of bytes from all buffered tuples */
+	CopyFromState cstate;		/* Copy state for this CopyMultiInsertInfo */
+	EState	   *estate;			/* Executor state used for COPY */
+	CommandId	mycid;			/* Command Id used for COPY */
+	int			ti_options;		/* table insert options */
+} CopyMultiInsertInfo;
+
+/*
+  * Represents the heap insert method to be used during COPY FROM.
+  */
+ typedef enum CopyInsertMethod
+ {
+     CIM_SINGLE,                 /* use table_tuple_insert or fdw routine */
+     CIM_MULTI,                  /* always use table_multi_insert */
+     CIM_MULTI_CONDITIONAL       /* use table_multi_insert only if valid */
+ } CopyInsertMethod;
+
 static CopyChunkState *
 copy_chunk_state_create(Hypertable *ht, Relation rel, CopyFromFunc from_func, CopyFromState cstate,
 						TableScanDesc scandesc)
