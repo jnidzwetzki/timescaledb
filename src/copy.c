@@ -55,7 +55,6 @@
  *
  */
 
-
 /*
  * No more than this many tuples per CopyMultiInsertBuffer
  *
@@ -65,25 +64,25 @@
  * memory requirements during copies into partitioned tables with a large
  * number of partitions.
  */
-#define MAX_BUFFERED_TUPLES		1000
+#define MAX_BUFFERED_TUPLES 1000
 
 /*
  * Flush buffers if there are >= this many bytes, as counted by the input
  * size, of tuples stored.
  */
-#define MAX_BUFFERED_BYTES		65535
+#define MAX_BUFFERED_BYTES 65535
 
 /* Trim the list of buffers back down to this number after flushing */
-#define MAX_PARTITION_BUFFERS	32
+#define MAX_PARTITION_BUFFERS 32
 
 /* Stores multi-insert data related to a single relation in CopyFrom. */
 typedef struct CopyMultiInsertBuffer
 {
 	TupleTableSlot *slots[MAX_BUFFERED_TUPLES]; /* Array to store tuples */
-	ResultRelInfo *resultRelInfo;	/* ResultRelInfo for 'relid' */
-	BulkInsertState bistate;	/* BulkInsertState for this rel */
-	int			nused;			/* number of 'slots' containing tuples */
-	uint64		linenos[MAX_BUFFERED_TUPLES];	/* Line # of tuple in copy
+	ResultRelInfo *resultRelInfo;				/* ResultRelInfo for 'relid' */
+	BulkInsertState bistate;					/* BulkInsertState for this rel */
+	int nused;									/* number of 'slots' containing tuples */
+	uint64 linenos[MAX_BUFFERED_TUPLES];		/* Line # of tuple in copy
 												 * stream */
 } CopyMultiInsertBuffer;
 
@@ -94,24 +93,24 @@ typedef struct CopyMultiInsertBuffer
  */
 typedef struct CopyMultiInsertInfo
 {
-	List	   *multiInsertBuffers; /* List of tracked CopyMultiInsertBuffers */
-	int			bufferedTuples; /* number of tuples buffered over all buffers */
-	int			bufferedBytes;	/* number of bytes from all buffered tuples */
-	CopyFromState cstate;		/* Copy state for this CopyMultiInsertInfo */
-	EState	   *estate;			/* Executor state used for COPY */
-	CommandId	mycid;			/* Command Id used for COPY */
-	int			ti_options;		/* table insert options */
+	List *multiInsertBuffers; /* List of tracked CopyMultiInsertBuffers */
+	int bufferedTuples;		  /* number of tuples buffered over all buffers */
+	int bufferedBytes;		  /* number of bytes from all buffered tuples */
+	CopyFromState cstate;	  /* Copy state for this CopyMultiInsertInfo */
+	EState *estate;			  /* Executor state used for COPY */
+	CommandId mycid;		  /* Command Id used for COPY */
+	int ti_options;			  /* table insert options */
 } CopyMultiInsertInfo;
 
 /*
-  * Represents the heap insert method to be used during COPY FROM.
-  */
- typedef enum CopyInsertMethod
- {
-     CIM_SINGLE,                 /* use table_tuple_insert or fdw routine */
-     CIM_MULTI,                  /* always use table_multi_insert */
-     CIM_MULTI_CONDITIONAL       /* use table_multi_insert only if valid */
- } CopyInsertMethod;
+ * Represents the heap insert method to be used during COPY FROM.
+ */
+typedef enum CopyInsertMethod
+{
+	CIM_SINGLE,			  /* use table_tuple_insert or fdw routine */
+	CIM_MULTI,			  /* always use table_multi_insert */
+	CIM_MULTI_CONDITIONAL /* use table_multi_insert only if valid */
+} CopyInsertMethod;
 
 static CopyChunkState *
 copy_chunk_state_create(Hypertable *ht, Relation rel, CopyFromFunc from_func, CopyFromState cstate,
@@ -130,6 +129,318 @@ copy_chunk_state_create(Hypertable *ht, Relation rel, CopyFromFunc from_func, Co
 	ccstate->where_clause = NULL;
 
 	return ccstate;
+}
+
+
+/*
+ * Allocate memory and initialize a new CopyMultiInsertBuffer for this
+ * ResultRelInfo.
+ */
+static CopyMultiInsertBuffer *
+CopyMultiInsertBufferInit(ResultRelInfo *rri)
+{
+	CopyMultiInsertBuffer *buffer;
+
+	buffer = (CopyMultiInsertBuffer *) palloc(sizeof(CopyMultiInsertBuffer));
+	memset(buffer->slots, 0, sizeof(TupleTableSlot *) * MAX_BUFFERED_TUPLES);
+	buffer->resultRelInfo = rri;
+	buffer->bistate = GetBulkInsertState();
+	buffer->nused = 0;
+
+	return buffer;
+}
+
+/*
+ * Make a new buffer for this ResultRelInfo.
+ */
+static inline void
+CopyMultiInsertInfoSetupBuffer(CopyMultiInsertInfo *miinfo,
+							   ResultRelInfo *rri)
+{
+	CopyMultiInsertBuffer *buffer;
+
+	buffer = CopyMultiInsertBufferInit(rri);
+
+	/* Setup back-link so we can easily find this buffer again */
+	rri->ri_CopyMultiInsertBuffer = buffer;
+	/* Record that we're tracking this buffer */
+	miinfo->multiInsertBuffers = lappend(miinfo->multiInsertBuffers, buffer);
+}
+
+/*
+ * Initialize an already allocated CopyMultiInsertInfo.
+ *
+ * If rri is a non-partitioned table then a CopyMultiInsertBuffer is set up
+ * for that table.
+ */
+static void
+CopyMultiInsertInfoInit(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,
+						CopyFromState cstate, EState *estate, CommandId mycid,
+						int ti_options)
+{
+	miinfo->multiInsertBuffers = NIL;
+	miinfo->bufferedTuples = 0;
+	miinfo->bufferedBytes = 0;
+	miinfo->cstate = cstate;
+	miinfo->estate = estate;
+	miinfo->mycid = mycid;
+	miinfo->ti_options = ti_options;
+
+	/*
+	 * Only setup the buffer when not dealing with a partitioned table.
+	 * Buffers for partitioned tables will just be setup when we need to send
+	 * tuples their way for the first time.
+	 */
+	if (rri->ri_RelationDesc->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		CopyMultiInsertInfoSetupBuffer(miinfo, rri);
+}
+
+/*
+ * Returns true if the buffers are full
+ */
+static inline bool
+CopyMultiInsertInfoIsFull(CopyMultiInsertInfo *miinfo)
+{
+	if (miinfo->bufferedTuples >= MAX_BUFFERED_TUPLES ||
+		miinfo->bufferedBytes >= MAX_BUFFERED_BYTES)
+		return true;
+	return false;
+}
+
+/*
+ * Returns true if we have no buffered tuples
+ */
+static inline bool
+CopyMultiInsertInfoIsEmpty(CopyMultiInsertInfo *miinfo)
+{
+	return miinfo->bufferedTuples == 0;
+}
+
+/*
+ * Write the tuples stored in 'buffer' out to the table.
+ */
+static inline void
+CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
+						   CopyMultiInsertBuffer *buffer)
+{
+	MemoryContext oldcontext;
+	int			i;
+	uint64		save_cur_lineno;
+	CopyFromState cstate = miinfo->cstate;
+	EState	   *estate = miinfo->estate;
+	CommandId	mycid = miinfo->mycid;
+	int			ti_options = miinfo->ti_options;
+	bool		line_buf_valid = cstate->line_buf_valid;
+	int			nused = buffer->nused;
+	ResultRelInfo *resultRelInfo = buffer->resultRelInfo;
+	TupleTableSlot **slots = buffer->slots;
+
+	/*
+	 * Print error context information correctly, if one of the operations
+	 * below fail.
+	 */
+	cstate->line_buf_valid = false;
+	save_cur_lineno = cstate->cur_lineno;
+
+	/*
+	 * table_multi_insert may leak memory, so switch to short-lived memory
+	 * context before calling it.
+	 */
+	oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	table_multi_insert(resultRelInfo->ri_RelationDesc,
+					   slots,
+					   nused,
+					   mycid,
+					   ti_options,
+					   buffer->bistate);
+	MemoryContextSwitchTo(oldcontext);
+
+	for (i = 0; i < nused; i++)
+	{
+		/*
+		 * If there are any indexes, update them for all the inserted tuples,
+		 * and run AFTER ROW INSERT triggers.
+		 */
+		if (resultRelInfo->ri_NumIndices > 0)
+		{
+			List	   *recheckIndexes;
+
+			cstate->cur_lineno = buffer->linenos[i];
+			recheckIndexes =
+				ExecInsertIndexTuples(resultRelInfo,
+									  buffer->slots[i], estate, false, false,
+									  NULL, NIL);
+			ExecARInsertTriggers(estate, resultRelInfo,
+								 slots[i], recheckIndexes,
+								 cstate->transition_capture);
+			list_free(recheckIndexes);
+		}
+
+		/*
+		 * There's no indexes, but see if we need to run AFTER ROW INSERT
+		 * triggers anyway.
+		 */
+		else if (resultRelInfo->ri_TrigDesc != NULL &&
+				 (resultRelInfo->ri_TrigDesc->trig_insert_after_row ||
+				  resultRelInfo->ri_TrigDesc->trig_insert_new_table))
+		{
+			cstate->cur_lineno = buffer->linenos[i];
+			ExecARInsertTriggers(estate, resultRelInfo,
+								 slots[i], NIL, cstate->transition_capture);
+		}
+
+		ExecClearTuple(slots[i]);
+	}
+
+	/* Mark that all slots are free */
+	buffer->nused = 0;
+
+	/* reset cur_lineno and line_buf_valid to what they were */
+	cstate->line_buf_valid = line_buf_valid;
+	cstate->cur_lineno = save_cur_lineno;
+}
+
+/*
+ * Drop used slots and free member for this buffer.
+ *
+ * The buffer must be flushed before cleanup.
+ */
+static inline void
+CopyMultiInsertBufferCleanup(CopyMultiInsertInfo *miinfo,
+							 CopyMultiInsertBuffer *buffer)
+{
+	int			i;
+
+	/* Ensure buffer was flushed */
+	Assert(buffer->nused == 0);
+
+	/* Remove back-link to ourself */
+	buffer->resultRelInfo->ri_CopyMultiInsertBuffer = NULL;
+
+	FreeBulkInsertState(buffer->bistate);
+
+	/* Since we only create slots on demand, just drop the non-null ones. */
+	for (i = 0; i < MAX_BUFFERED_TUPLES && buffer->slots[i] != NULL; i++)
+		ExecDropSingleTupleTableSlot(buffer->slots[i]);
+
+	table_finish_bulk_insert(buffer->resultRelInfo->ri_RelationDesc,
+							 miinfo->ti_options);
+
+	pfree(buffer);
+}
+
+/*
+ * Write out all stored tuples in all buffers out to the tables.
+ *
+ * Once flushed we also trim the tracked buffers list down to size by removing
+ * the buffers created earliest first.
+ *
+ * Callers should pass 'curr_rri' as the ResultRelInfo that's currently being
+ * used.  When cleaning up old buffers we'll never remove the one for
+ * 'curr_rri'.
+ */
+static inline void
+CopyMultiInsertInfoFlush(CopyMultiInsertInfo *miinfo, ResultRelInfo *curr_rri)
+{
+	ListCell   *lc;
+
+	foreach(lc, miinfo->multiInsertBuffers)
+	{
+		CopyMultiInsertBuffer *buffer = (CopyMultiInsertBuffer *) lfirst(lc);
+
+		CopyMultiInsertBufferFlush(miinfo, buffer);
+	}
+
+	miinfo->bufferedTuples = 0;
+	miinfo->bufferedBytes = 0;
+
+	/*
+	 * Trim the list of tracked buffers down if it exceeds the limit.  Here we
+	 * remove buffers starting with the ones we created first.  It seems less
+	 * likely that these older ones will be needed than the ones that were
+	 * just created.
+	 */
+	while (list_length(miinfo->multiInsertBuffers) > MAX_PARTITION_BUFFERS)
+	{
+		CopyMultiInsertBuffer *buffer;
+
+		buffer = (CopyMultiInsertBuffer *) linitial(miinfo->multiInsertBuffers);
+
+		/*
+		 * We never want to remove the buffer that's currently being used, so
+		 * if we happen to find that then move it to the end of the list.
+		 */
+		if (buffer->resultRelInfo == curr_rri)
+		{
+			miinfo->multiInsertBuffers = list_delete_first(miinfo->multiInsertBuffers);
+			miinfo->multiInsertBuffers = lappend(miinfo->multiInsertBuffers, buffer);
+			buffer = (CopyMultiInsertBuffer *) linitial(miinfo->multiInsertBuffers);
+		}
+
+		CopyMultiInsertBufferCleanup(miinfo, buffer);
+		miinfo->multiInsertBuffers = list_delete_first(miinfo->multiInsertBuffers);
+	}
+}
+
+/*
+ * Cleanup allocated buffers and free memory
+ */
+static inline void
+CopyMultiInsertInfoCleanup(CopyMultiInsertInfo *miinfo)
+{
+	ListCell   *lc;
+
+	foreach(lc, miinfo->multiInsertBuffers)
+		CopyMultiInsertBufferCleanup(miinfo, lfirst(lc));
+
+	list_free(miinfo->multiInsertBuffers);
+}
+
+/*
+ * Get the next TupleTableSlot that the next tuple should be stored in.
+ *
+ * Callers must ensure that the buffer is not full.
+ *
+ * Note: 'miinfo' is unused but has been included for consistency with the
+ * other functions in this area.
+ */
+static inline TupleTableSlot *
+CopyMultiInsertInfoNextFreeSlot(CopyMultiInsertInfo *miinfo,
+								ResultRelInfo *rri)
+{
+	CopyMultiInsertBuffer *buffer = rri->ri_CopyMultiInsertBuffer;
+	int			nused = buffer->nused;
+
+	Assert(buffer != NULL);
+	Assert(nused < MAX_BUFFERED_TUPLES);
+
+	if (buffer->slots[nused] == NULL)
+		buffer->slots[nused] = table_slot_create(rri->ri_RelationDesc, NULL);
+	return buffer->slots[nused];
+}
+
+/*
+ * Record the previously reserved TupleTableSlot that was reserved by
+ * CopyMultiInsertInfoNextFreeSlot as being consumed.
+ */
+static inline void
+CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,
+						 TupleTableSlot *slot, int tuplen, uint64 lineno)
+{
+	CopyMultiInsertBuffer *buffer = rri->ri_CopyMultiInsertBuffer;
+
+	Assert(buffer != NULL);
+	Assert(slot == buffer->slots[buffer->nused]);
+
+	/* Store the line number so we can properly report any errors later */
+	buffer->linenos[buffer->nused] = lineno;
+
+	/* Record this slot as being used */
+	buffer->nused++;
+
+	/* Update how many tuples are stored and their size */
+	miinfo->bufferedTuples++;
+	miinfo->bufferedBytes += tuplen;
 }
 
 static void
@@ -201,6 +512,8 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	int ti_options = 0; /* start with default options for insert */
 	BulkInsertState bistate = NULL;
 	uint64 processed = 0;
+	bool has_before_insert_row_trig;
+	bool		has_instead_insert_row_trig;
 	ExprState *qualexpr = NULL;
 	ChunkDispatch *dispatch = ccstate->dispatch;
 
@@ -346,6 +659,32 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	{
 		errcallback.previous = error_context_stack;
 		error_context_stack = &errcallback;
+	}
+
+	/* BEFORE ROW INSERT Triggers */
+	has_before_insert_row_trig = (resultRelInfo->ri_TrigDesc &&
+									resultRelInfo->ri_TrigDesc->trig_insert_before_row);
+
+	/* AFTER ROW INSERT Triggers */
+	has_instead_insert_row_trig = (resultRelInfo->ri_TrigDesc &&
+								resultRelInfo->ri_TrigDesc->trig_insert_instead_row);
+
+	/*
+		* Multi-insert buffers can only be used if no triggers are defined on the target table. 
+		* Otherwise, the tuples may be inserted in an out-of-order manner, which might violate 
+		* the semantics of the triggers.
+		*/ 
+	if(has_before_insert_row_trig || has_instead_insert_row_trig) {
+		insertMethod = CIM_SINGLE;
+		ereport(DEBUG3,
+				(errmsg("Using normal unbuffered copy operation (CIM_SINGLE) because "
+				"triggers are defined on the destination table.")));
+	} 
+	else 
+	{
+		insertMethod = CIM_MULTI;
+		ereport(DEBUG3,
+				(errmsg("Using optimized CIM_MULTI copy operation.")));
 	}
 
 	for (;;)
