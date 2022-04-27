@@ -50,8 +50,8 @@
  *
  * Unfortunately, there aren't any good hooks in the regular COPY code to insert
  * our chunk dispatching. So, most of this code is a straight-up copy of the
- * regular PostgreSQL source code for the COPY command (command/copy.c), albeit
- * with minor modifications.
+ * regular PostgreSQL source code for the COPY command (command/copy.c 
+ * and command/copyfrom.c), albeit with minor modifications.
  *
  */
 
@@ -111,6 +111,8 @@ typedef enum CopyInsertMethod
 	CIM_MULTI,			  /* always use table_multi_insert */
 	CIM_MULTI_CONDITIONAL /* use table_multi_insert only if valid */
 } CopyInsertMethod;
+
+
 
 static CopyChunkState *
 copy_chunk_state_create(Hypertable *ht, Relation rel, CopyFromFunc from_func, CopyFromState cstate,
@@ -218,6 +220,8 @@ CopyMultiInsertInfoIsEmpty(CopyMultiInsertInfo *miinfo)
 
 /*
  * Write the tuples stored in 'buffer' out to the table.
+ * 
+ * TODO: Linemnumber reporting is diabled
  */
 static inline void
 CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
@@ -225,12 +229,12 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 {
 	MemoryContext oldcontext;
 	int			i;
-	uint64		save_cur_lineno;
-	CopyFromState cstate = miinfo->cstate;
+//TODO	uint64		save_cur_lineno;
+//TODO	CopyFromState cstate = miinfo->cstate;
 	EState	   *estate = miinfo->estate;
 	CommandId	mycid = miinfo->mycid;
 	int			ti_options = miinfo->ti_options;
-	bool		line_buf_valid = cstate->line_buf_valid;
+//TODO	bool		line_buf_valid = cstate->line_buf_valid;
 	int			nused = buffer->nused;
 	ResultRelInfo *resultRelInfo = buffer->resultRelInfo;
 	TupleTableSlot **slots = buffer->slots;
@@ -239,8 +243,8 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	 * Print error context information correctly, if one of the operations
 	 * below fail.
 	 */
-	cstate->line_buf_valid = false;
-	save_cur_lineno = cstate->cur_lineno;
+	//TODO cstate->line_buf_valid = false;
+	//TODO save_cur_lineno = cstate->cur_lineno;
 
 	/*
 	 * table_multi_insert may leak memory, so switch to short-lived memory
@@ -265,14 +269,18 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 		{
 			List	   *recheckIndexes;
 
-			cstate->cur_lineno = buffer->linenos[i];
-			recheckIndexes =
-				ExecInsertIndexTuples(resultRelInfo,
-									  buffer->slots[i], estate, false, false,
-									  NULL, NIL);
+			//TODOcstate->cur_lineno = buffer->linenos[i];
+			recheckIndexes = ExecInsertIndexTuplesCompat(resultRelInfo,
+														buffer->slots[i],
+														estate,
+														false,
+														false,
+														NULL,
+														NIL);
+
 			ExecARInsertTriggers(estate, resultRelInfo,
 								 slots[i], recheckIndexes,
-								 cstate->transition_capture);
+								 NULL /* transition capture */);
 			list_free(recheckIndexes);
 		}
 
@@ -284,9 +292,10 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 				 (resultRelInfo->ri_TrigDesc->trig_insert_after_row ||
 				  resultRelInfo->ri_TrigDesc->trig_insert_new_table))
 		{
-			cstate->cur_lineno = buffer->linenos[i];
+			//TODOcstate->cur_lineno = buffer->linenos[i];
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 slots[i], NIL, cstate->transition_capture);
+								 slots[i], NIL, 
+								 NULL /* transition capture */);
 		}
 
 		ExecClearTuple(slots[i]);
@@ -296,8 +305,8 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	buffer->nused = 0;
 
 	/* reset cur_lineno and line_buf_valid to what they were */
-	cstate->line_buf_valid = line_buf_valid;
-	cstate->cur_lineno = save_cur_lineno;
+	//TODOcstate->line_buf_valid = line_buf_valid;
+	//TODOcstate->cur_lineno = save_cur_lineno;
 }
 
 /*
@@ -509,6 +518,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	};
 	CommandId mycid = GetCurrentCommandId(true);
 	CopyInsertMethod insertMethod;
+	CopyMultiInsertInfo multiInsertInfo = {0};	/* pacify compiler */
 	int ti_options = 0; /* start with default options for insert */
 	BulkInsertState bistate = NULL;
 	uint64 processed = 0;
@@ -868,6 +878,13 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	estate->es_result_relation_info = ccstate->dispatch->hypertable_result_rel_info;
 #endif
 
+	/* Flush any remaining buffered tuples */
+	if (insertMethod != CIM_SINGLE)
+	{
+		if (!CopyMultiInsertInfoIsEmpty(&multiInsertInfo))
+			CopyMultiInsertInfoFlush(&multiInsertInfo, NULL);
+	}
+
 	/* Done, clean up */
 	if (errcallback.previous)
 		error_context_stack = errcallback.previous;
@@ -883,6 +900,10 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	AfterTriggerEndQuery(estate);
 
 	ExecResetTupleTable(estate->es_tupleTable, false);
+
+	/* Tear down the multi-insert buffer data */
+	if (insertMethod != CIM_SINGLE)
+		CopyMultiInsertInfoCleanup(&multiInsertInfo);
 
 #if PG14_LT
 	ExecCloseIndices(resultRelInfo);
