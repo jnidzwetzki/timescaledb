@@ -45,6 +45,11 @@
 #include "nodes/chunk_insert_state.h"
 #include "subspace_store.h"
 
+// PG14_GE is defined in compat/compat.h, so it must be included first
+#if PG14_GE
+#include <commands/copyfrom_internal.h>
+#endif
+
 /*
  * Copy from a file to a hypertable.
  *
@@ -221,7 +226,6 @@ CopyMultiInsertInfoIsEmpty(CopyMultiInsertInfo *miinfo)
 /*
  * Write the tuples stored in 'buffer' out to the table.
  * 
- * TODO: Linemnumber reporting is diabled
  */
 static inline void
 CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
@@ -229,12 +233,14 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 {
 	MemoryContext oldcontext;
 	int			i;
-//TODO	uint64		save_cur_lineno;
-//TODO	CopyFromState cstate = miinfo->cstate;
+#if PG14_GE
+	uint64		save_cur_lineno;
+	CopyFromState cstate = miinfo->cstate;
+	bool		line_buf_valid = cstate->line_buf_valid;
+#endif
 	EState	   *estate = miinfo->estate;
 	CommandId	mycid = miinfo->mycid;
 	int			ti_options = miinfo->ti_options;
-//TODO	bool		line_buf_valid = cstate->line_buf_valid;
 	int			nused = buffer->nused;
 	ResultRelInfo *resultRelInfo = buffer->resultRelInfo;
 	TupleTableSlot **slots = buffer->slots;
@@ -243,8 +249,10 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	 * Print error context information correctly, if one of the operations
 	 * below fail.
 	 */
-	//TODO cstate->line_buf_valid = false;
-	//TODO save_cur_lineno = cstate->cur_lineno;
+#if PG14_GE
+	cstate->line_buf_valid = false;
+	save_cur_lineno = cstate->cur_lineno;
+#endif
 
 	/*
 	 * table_multi_insert may leak memory, so switch to short-lived memory
@@ -269,7 +277,9 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 		{
 			List	   *recheckIndexes;
 
-			//TODOcstate->cur_lineno = buffer->linenos[i];
+#if PG14_GE
+			state->cur_lineno = buffer->linenos[i];
+#endif
 			recheckIndexes = ExecInsertIndexTuplesCompat(resultRelInfo,
 														buffer->slots[i],
 														estate,
@@ -292,7 +302,9 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 				 (resultRelInfo->ri_TrigDesc->trig_insert_after_row ||
 				  resultRelInfo->ri_TrigDesc->trig_insert_new_table))
 		{
-			//TODOcstate->cur_lineno = buffer->linenos[i];
+#if PG14_GE
+			cstate->cur_lineno = buffer->linenos[i];
+#endif
 			ExecARInsertTriggers(estate, resultRelInfo,
 								 slots[i], NIL, 
 								 NULL /* transition capture */);
@@ -305,8 +317,10 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	buffer->nused = 0;
 
 	/* reset cur_lineno and line_buf_valid to what they were */
-	//TODOcstate->line_buf_valid = line_buf_valid;
-	//TODOcstate->cur_lineno = save_cur_lineno;
+#if PG14_GE
+	cstate->line_buf_valid = line_buf_valid;
+	cstate->cur_lineno = save_cur_lineno;
+#endif
 }
 
 /*
