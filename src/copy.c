@@ -463,10 +463,17 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	/* Update how many tuples are stored and their size */
 	miinfo->bufferedTuples++;
 
+	Size data_size =
+		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+	miinfo->bufferedBytes += data_size;
+
+/*
+TODO
 #if PG14_GE
 	int tuplen = cstate->line_buf.len;
 	miinfo->bufferedBytes += tuplen;
 #endif
+*/
 }
 
 static void
