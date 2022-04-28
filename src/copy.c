@@ -84,8 +84,8 @@
 typedef struct CopyMultiInsertBuffer
 {
 	TupleTableSlot *slots[MAX_BUFFERED_TUPLES]; /* Array to store tuples */
-	ResultRelInfo *resultRelInfo;				/* ResultRelInfo for 'relid' */
-	BulkInsertState bistate;					/* BulkInsertState for this rel */
+	ChunkInsertState *cis;						/* ChunkInsertState this buffer */
+	BulkInsertState bistate;					/* BulkInsertState for this buffer */
 	int nused;									/* number of 'slots' containing tuples */
 	uint64 linenos[MAX_BUFFERED_TUPLES];		/* Line # of tuple in copy
 												 * stream */
@@ -101,7 +101,7 @@ typedef struct CopyMultiInsertInfo
 	List *multiInsertBuffers; /* List of tracked CopyMultiInsertBuffers */
 	int bufferedTuples;		  /* number of tuples buffered over all buffers */
 	int bufferedBytes;		  /* number of bytes from all buffered tuples */
-	CopyFromState cstate;	  /* Copy state for this CopyMultiInsertInfo */
+	CopyChunkState* ccstate;  /* Copy chunk state for this CopyMultiInsertInfo */
 	EState *estate;			  /* Executor state used for COPY */
 	CommandId mycid;		  /* Command Id used for COPY */
 	int ti_options;			  /* table insert options */
@@ -144,13 +144,13 @@ copy_chunk_state_create(Hypertable *ht, Relation rel, CopyFromFunc from_func, Co
  * ResultRelInfo.
  */
 static CopyMultiInsertBuffer *
-CopyMultiInsertBufferInit(ResultRelInfo *rri)
+CopyMultiInsertBufferInit(ChunkInsertState *cis)
 {
 	CopyMultiInsertBuffer *buffer;
 
 	buffer = (CopyMultiInsertBuffer *) palloc(sizeof(CopyMultiInsertBuffer));
 	memset(buffer->slots, 0, sizeof(TupleTableSlot *) * MAX_BUFFERED_TUPLES);
-	buffer->resultRelInfo = rri;
+	buffer->cis = cis;
 	buffer->bistate = GetBulkInsertState();
 	buffer->nused = 0;
 
@@ -162,14 +162,14 @@ CopyMultiInsertBufferInit(ResultRelInfo *rri)
  */
 static inline void
 CopyMultiInsertInfoSetupBuffer(CopyMultiInsertInfo *miinfo,
-							   ResultRelInfo *rri)
+							   ChunkInsertState *cis)
 {
 	CopyMultiInsertBuffer *buffer;
 
-	buffer = CopyMultiInsertBufferInit(rri);
+	buffer = CopyMultiInsertBufferInit(cis);
 
 	/* Setup back-link so we can easily find this buffer again */
-	rri->ri_CopyMultiInsertBuffer = buffer;
+	cis->ri_CopyMultiInsertBuffer = buffer;
 	/* Record that we're tracking this buffer */
 	miinfo->multiInsertBuffers = lappend(miinfo->multiInsertBuffers, buffer);
 }
@@ -182,24 +182,16 @@ CopyMultiInsertInfoSetupBuffer(CopyMultiInsertInfo *miinfo,
  */
 static void
 CopyMultiInsertInfoInit(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,
-						CopyFromState cstate, EState *estate, CommandId mycid,
+						CopyChunkState* ccstate, EState *estate, CommandId mycid,
 						int ti_options)
 {
 	miinfo->multiInsertBuffers = NIL;
 	miinfo->bufferedTuples = 0;
 	miinfo->bufferedBytes = 0;
-	miinfo->cstate = cstate;
+	miinfo->ccstate = ccstate;
 	miinfo->estate = estate;
 	miinfo->mycid = mycid;
 	miinfo->ti_options = ti_options;
-
-	/*
-	 * Only setup the buffer when not dealing with a partitioned table.
-	 * Buffers for partitioned tables will just be setup when we need to send
-	 * tuples their way for the first time.
-	 */
-	if (rri->ri_RelationDesc->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
-		CopyMultiInsertInfoSetupBuffer(miinfo, rri);
 }
 
 /*
@@ -242,7 +234,7 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	CommandId	mycid = miinfo->mycid;
 	int			ti_options = miinfo->ti_options;
 	int			nused = buffer->nused;
-	ResultRelInfo *resultRelInfo = buffer->resultRelInfo;
+	ResultRelInfo *resultRelInfo = buffer->cis->result_relation_info;
 	TupleTableSlot **slots = buffer->slots;
 
 	/*
@@ -333,12 +325,16 @@ CopyMultiInsertBufferCleanup(CopyMultiInsertInfo *miinfo,
 							 CopyMultiInsertBuffer *buffer)
 {
 	int			i;
-
+	ResultRelInfo* result_relation_info;
+	
 	/* Ensure buffer was flushed */
 	Assert(buffer->nused == 0);
 
+	result_relation_info = buffer->cis->result_relation_info;
+	Assert(result_relation_info != NULL);
+
 	/* Remove back-link to ourself */
-	buffer->resultRelInfo->ri_CopyMultiInsertBuffer = NULL;
+	result_relation_info->ri_CopyMultiInsertBuffer = NULL;
 
 	FreeBulkInsertState(buffer->bistate);
 
@@ -346,7 +342,7 @@ CopyMultiInsertBufferCleanup(CopyMultiInsertInfo *miinfo,
 	for (i = 0; i < MAX_BUFFERED_TUPLES && buffer->slots[i] != NULL; i++)
 		ExecDropSingleTupleTableSlot(buffer->slots[i]);
 
-	table_finish_bulk_insert(buffer->resultRelInfo->ri_RelationDesc,
+	table_finish_bulk_insert(result_relation_info->ri_RelationDesc,
 							 miinfo->ti_options);
 
 	pfree(buffer);
@@ -393,7 +389,7 @@ CopyMultiInsertInfoFlush(CopyMultiInsertInfo *miinfo, ResultRelInfo *curr_rri)
 		 * We never want to remove the buffer that's currently being used, so
 		 * if we happen to find that then move it to the end of the list.
 		 */
-		if (buffer->resultRelInfo == curr_rri)
+		if (buffer->cis->result_relation_info == curr_rri)
 		{
 			miinfo->multiInsertBuffers = list_delete_first(miinfo->multiInsertBuffers);
 			miinfo->multiInsertBuffers = lappend(miinfo->multiInsertBuffers, buffer);
@@ -448,7 +444,7 @@ CopyMultiInsertInfoNextFreeSlot(CopyMultiInsertInfo *miinfo,
  */
 static inline void
 CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,
-						 TupleTableSlot *slot, int tuplen, uint64 lineno)
+						 TupleTableSlot *slot, CopyFromState cstate)
 {
 	CopyMultiInsertBuffer *buffer = rri->ri_CopyMultiInsertBuffer;
 
@@ -456,14 +452,27 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,
 	Assert(slot == buffer->slots[buffer->nused]);
 
 	/* Store the line number so we can properly report any errors later */
+	uint64 lineno = 0;
+
+	/* The structure CopyFromState is private in PG < 14. So we can not access
+	 * the members like the line number or the size of the tuple. 
+	 */
+#if PG14_GE
+	lineno = cstate->cur_lineno;
+#endif
 	buffer->linenos[buffer->nused] = lineno;
+
 
 	/* Record this slot as being used */
 	buffer->nused++;
 
 	/* Update how many tuples are stored and their size */
 	miinfo->bufferedTuples++;
+
+#if PG14_GE
+	int tuplen = cstate->line_buf.len;
 	miinfo->bufferedBytes += tuplen;
+#endif
 }
 
 static void
@@ -694,21 +703,23 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 								resultRelInfo->ri_TrigDesc->trig_insert_instead_row);
 
 	/*
-		* Multi-insert buffers can only be used if no triggers are defined on the target table. 
-		* Otherwise, the tuples may be inserted in an out-of-order manner, which might violate 
-		* the semantics of the triggers.
-		*/ 
+	* Multi-insert buffers can only be used if no triggers are defined on the 
+	* target table. Otherwise, the tuples may be inserted in an out-of-order manner, 
+	* which might violate the semantics of the triggers.
+	*/ 
 	if(has_before_insert_row_trig || has_instead_insert_row_trig) {
 		insertMethod = CIM_SINGLE;
 		ereport(DEBUG3,
-				(errmsg("Using normal unbuffered copy operation (CIM_SINGLE) because "
-				"triggers are defined on the destination table.")));
+				(errmsg("Using normal unbuffered copy operation (CIM_SINGLE) "
+				"because triggers are defined on the destination table.")));
 	} 
 	else 
 	{
 		insertMethod = CIM_MULTI;
 		ereport(DEBUG3,
 				(errmsg("Using optimized CIM_MULTI copy operation.")));
+		CopyMultiInsertInfoInit(&multiInsertInfo, resultRelInfo, ccstate,
+								estate, mycid, ti_options);
 	}
 
 	for (;;)
@@ -749,12 +760,44 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 
 		Assert(cis != NULL);
 
+		if (cis->ri_CopyMultiInsertBuffer == NULL)
+			CopyMultiInsertInfoSetupBuffer(&multiInsertInfo, cis);
+
 		/* Triggers and stuff need to be invoked in query context. */
 		MemoryContextSwitchTo(oldcontext);
 
 		/* Convert the tuple to match the chunk's rowtype */
-		if (NULL != cis->hyper_to_chunk_map)
-			myslot = execute_attr_map_slot(cis->hyper_to_chunk_map->attrMap, myslot, cis->slot);
+		if(insertMethod == CIM_SINGLE )
+		{
+			if (NULL != cis->hyper_to_chunk_map)
+				myslot = execute_attr_map_slot(cis->hyper_to_chunk_map->attrMap, myslot, cis->slot);
+		}
+		else 
+		{
+			/*
+			 * Prepare to queue up tuple for later batch insert into
+			 * current chunk.
+			 */
+			TupleTableSlot *batchslot;
+
+			batchslot = CopyMultiInsertInfoNextFreeSlot(&multiInsertInfo,
+														resultRelInfo);
+
+			if (NULL != cis->hyper_to_chunk_map)
+				myslot = execute_attr_map_slot(cis->hyper_to_chunk_map->attrMap, myslot, batchslot);
+			else 
+			{
+				/*
+				 * This looks more expensive than it is (Believe me, I
+				 * optimized it away. Twice.). The input is in virtual
+				 * form, and we'll materialize the slot below - for most
+				 * slot types the copy performs the work materialization
+				 * would later require anyway.
+				 */
+				ExecCopySlot(batchslot, myslot);
+				myslot = batchslot;
+			}
+		}
 
 		if (qualexpr != NULL)
 		{
@@ -849,27 +892,52 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 			}
 			else
 			{
-				/* OK, store the tuple and create index entries for it */
-				table_tuple_insert(resultRelInfo->ri_RelationDesc,
-								   myslot,
-								   mycid,
-								   ti_options,
-								   bistate);
+				if (insertMethod == CIM_SINGLE)
+				{
+					/* OK, store the tuple and create index entries for it */
+					table_tuple_insert(resultRelInfo->ri_RelationDesc,
+									myslot,
+									mycid,
+									ti_options,
+									bistate);
 
-				if (resultRelInfo->ri_NumIndices > 0)
-					recheckIndexes = ExecInsertIndexTuplesCompat(resultRelInfo,
-																 myslot,
-																 estate,
-																 false,
-																 false,
-																 NULL,
-																 NIL);
-				/* AFTER ROW INSERT Triggers */
-				ExecARInsertTriggers(estate,
-									 check_resultRelInfo,
-									 myslot,
-									 recheckIndexes,
-									 NULL /* transition capture */);
+					if (resultRelInfo->ri_NumIndices > 0)
+						recheckIndexes = ExecInsertIndexTuplesCompat(resultRelInfo,
+																	myslot,
+																	estate,
+																	false,
+																	false,
+																	NULL,
+																	NIL);
+					/* AFTER ROW INSERT Triggers */
+					ExecARInsertTriggers(estate,
+										check_resultRelInfo,
+										myslot,
+										recheckIndexes,
+										NULL /* transition capture */);
+				}
+				else
+				{
+					/*
+					 * The slot previously might point into the per-tuple
+					 * context. For batching it needs to be longer lived.
+					 */
+					ExecMaterializeSlot(myslot);
+
+					/* Add this tuple to the tuple buffer */
+					CopyMultiInsertInfoStore(&multiInsertInfo,
+											 resultRelInfo, 
+											 myslot,
+											 ccstate->cstate);
+											 
+
+					/*
+					 * If enough inserts have queued up, then flush all
+					 * buffers out to their tables.
+					 */
+					if (CopyMultiInsertInfoIsFull(&multiInsertInfo))
+						CopyMultiInsertInfoFlush(&multiInsertInfo, resultRelInfo);
+				}
 			}
 
 			list_free(recheckIndexes);

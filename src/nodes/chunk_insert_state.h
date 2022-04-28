@@ -73,6 +73,9 @@ typedef struct ChunkInsertState
 
 	/* for tracking compressed chunks */
 	CompressChunkInsertState *compress_info;
+
+	/* For use by copy.c when performing multi-inserts */
+	struct CopyMultiInsertBuffer *ri_CopyMultiInsertBuffer;
 } ChunkInsertState;
 
 typedef struct ChunkDispatch ChunkDispatch;
