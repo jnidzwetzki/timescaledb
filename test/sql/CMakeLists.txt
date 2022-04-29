@@ -10,7 +10,6 @@ set(TEST_FILES
     create_chunks.sql
     create_hypertable.sql
     create_table.sql
-    cursor.sql
     ddl_errors.sql
     drop_extension.sql
     drop_hypertable.sql
@@ -46,6 +45,7 @@ set(TEST_FILES
     tableam.sql
     tablespace.sql
     timestamp.sql
+    triggers.sql
     truncate.sql
     upsert.sql
     util.sql
@@ -60,13 +60,13 @@ set(TEST_TEMPLATES
     cluster.sql.in
     constraint.sql.in
     copy.sql.in
+    cursor.sql.in
     ddl.sql.in
     delete.sql.in
     partitionwise.sql.in
     plan_expand_hypertable.sql.in
     plan_hypertable_inline.sql.in
     rowsecurity.sql.in
-    triggers.sql.in
     update.sql.in)
 
 # tests that fail or are unreliable when run in parallel bgw tests need to run

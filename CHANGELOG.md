@@ -6,6 +6,8 @@ accidentally triggering the load of a previous DB version.**
 
 ## Unreleased
 
+If you use compression with a non-default collation on a segmentby-column you might have to recompress the affected hypertable.
+
 **Features**
 * #4120 Add logging for retention policy
 * #4169 Add support for chunk exclusion on DELETE to PG14
@@ -13,8 +15,14 @@ accidentally triggering the load of a previous DB version.**
 * #4080 Adopt multi-insert support for COPY
 
 **Bugfixes**
-* #4225 Fix TRUNCATE error as non-owner on hypertable
 * #3899 Fix segfault in Continuous Aggregates
+* #4225 Fix TRUNCATE error as non-owner on hypertable
+* #4259 Fix logic bug in extension update script
+* #4236 Fix potential wrong order of results for compressed hypertable with a non-default collation
+* #4255 Fix option "timescaledb.create_group_indexes"
+
+**Thanks**
+* @jsoref for fixing various misspellings in code, comments and documentation
 
 ## 2.6.1 (2022-04-11)
 This release is patch release. We recommend that you upgrade at the next available opportunity.
@@ -58,7 +66,7 @@ The release also includes several bug fixes. Telemetry reports now include new a
 **Bugfixes**
 * #3808 Properly handle `max_retries` option
 * #3863 Fix remote transaction heal logic
-* #3869 Fix ALTER SET/DROP NULL contstraint on distributed hypertable
+* #3869 Fix ALTER SET/DROP NULL constraint on distributed hypertable
 * #3944 Fix segfault in add_compression_policy
 * #3961 Fix crash in EXPLAIN VERBOSE on distributed hypertable
 * #4015 Eliminate float rounding instabilities in interpolate
