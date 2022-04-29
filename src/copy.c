@@ -522,6 +522,23 @@ copy_table_to_chunk_error_callback(void *arg)
 }
 
 /*
+ * Tests if the timescale ts_insert_blocker trigger is the only trigger on the table.
+ */
+static bool
+only_ts_block_trigger_is_configured(ResultRelInfo *resultRelInfo)
+{
+	if (resultRelInfo->ri_TrigDesc == NULL)
+		return false;
+
+	if (resultRelInfo->ri_TrigDesc->numtriggers > 1)
+		return false;
+
+	return (strncmp(resultRelInfo->ri_TrigDesc->triggers[0].tgname,
+					INSERT_BLOCKER_NAME,
+					NAMEDATALEN) == 0);
+}
+
+/*
  * Use COPY FROM to copy data from file to relation.
  */
 static uint64
@@ -700,21 +717,29 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		error_context_stack = &errcallback;
 	}
 
-	/* BEFORE ROW INSERT Triggers */
-	has_before_insert_row_trig =
-		(resultRelInfo->ri_TrigDesc && resultRelInfo->ri_TrigDesc->trig_insert_before_row);
+	/* Ignore the timescale ts_insert_blocker trigger */
+	if (only_ts_block_trigger_is_configured(resultRelInfo))
+	{
+		has_before_insert_row_trig = false;
+		has_instead_insert_row_trig = false;
+	}
+	else
+	{
+		/* BEFORE ROW INSERT Triggers */
+		has_before_insert_row_trig =
+			(resultRelInfo->ri_TrigDesc && resultRelInfo->ri_TrigDesc->trig_insert_before_row);
 
-	/* AFTER ROW INSERT Triggers */
-	has_instead_insert_row_trig =
-		(resultRelInfo->ri_TrigDesc && resultRelInfo->ri_TrigDesc->trig_insert_instead_row);
+		/* AFTER ROW INSERT Triggers */
+		has_instead_insert_row_trig =
+			(resultRelInfo->ri_TrigDesc && resultRelInfo->ri_TrigDesc->trig_insert_instead_row);
+	}
 
 	/*
 	 * Multi-insert buffers can only be used if no triggers are defined on the
 	 * target table. Otherwise, the tuples may be inserted in an out-of-order manner,
 	 * which might violate the semantics of the triggers.
 	 */
-	// if (has_before_insert_row_trig || has_instead_insert_row_trig)
-	if (has_before_insert_row_trig && has_instead_insert_row_trig && false)
+	if (has_before_insert_row_trig || has_instead_insert_row_trig)
 	{
 		insertMethod = CIM_SINGLE;
 		ereport(DEBUG1,
@@ -724,7 +749,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	else
 	{
 		insertMethod = CIM_MULTI;
-		ereport(DEBUG1, (errmsg("Using optimized CIM_MULTI copy operation.")));
+		ereport(DEBUG1, (errmsg("Using buffered copy operation (CIM_MULTI).")));
 		CopyMultiInsertInfoInit(&multiInsertInfo,
 								resultRelInfo,
 								ccstate,
