@@ -165,7 +165,7 @@ CopyMultiInsertInfoSetupBuffer(CopyMultiInsertInfo *miinfo, ChunkInsertState *ci
 	buffer = CopyMultiInsertBufferInit(cis);
 
 	/* Setup back-link so we can easily find this buffer again */
-	cis->ri_CopyMultiInsertBuffer = buffer;
+	cis->result_relation_info->ri_CopyMultiInsertBuffer = buffer;
 	/* Record that we're tracking this buffer */
 	miinfo->multiInsertBuffers = lappend(miinfo->multiInsertBuffers, buffer);
 }
@@ -240,6 +240,10 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo, CopyMultiInsertBuffer *b
 	save_cur_lineno = cstate->cur_lineno;
 #endif
 
+#if PG14_LT
+	estate->es_result_relation_info = resultRelInfo;
+#endif
+
 	/*
 	 * table_multi_insert may leak memory, so switch to short-lived memory
 	 * context before calling it.
@@ -266,6 +270,7 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo, CopyMultiInsertBuffer *b
 #if PG14_GE
 			state->cur_lineno = buffer->linenos[i];
 #endif
+
 			recheckIndexes = ExecInsertIndexTuplesCompat(resultRelInfo,
 														 buffer->slots[i],
 														 estate,
@@ -467,13 +472,13 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
 	miinfo->bufferedBytes += data_size;
 
-/*
-TODO
-#if PG14_GE
-	int tuplen = cstate->line_buf.len;
-	miinfo->bufferedBytes += tuplen;
-#endif
-*/
+	/*
+	TODO
+	#if PG14_GE
+		int tuplen = cstate->line_buf.len;
+		miinfo->bufferedBytes += tuplen;
+	#endif
+	*/
 }
 
 static void
@@ -708,17 +713,18 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	 * target table. Otherwise, the tuples may be inserted in an out-of-order manner,
 	 * which might violate the semantics of the triggers.
 	 */
-	if (has_before_insert_row_trig || has_instead_insert_row_trig)
+	// if (has_before_insert_row_trig || has_instead_insert_row_trig)
+	if (has_before_insert_row_trig && has_instead_insert_row_trig && false)
 	{
 		insertMethod = CIM_SINGLE;
-		ereport(DEBUG3,
+		ereport(DEBUG1,
 				(errmsg("Using normal unbuffered copy operation (CIM_SINGLE) "
 						"because triggers are defined on the destination table.")));
 	}
 	else
 	{
 		insertMethod = CIM_MULTI;
-		ereport(DEBUG3, (errmsg("Using optimized CIM_MULTI copy operation.")));
+		ereport(DEBUG1, (errmsg("Using optimized CIM_MULTI copy operation.")));
 		CopyMultiInsertInfoInit(&multiInsertInfo,
 								resultRelInfo,
 								ccstate,
@@ -765,9 +771,6 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 
 		Assert(cis != NULL);
 
-		if (cis->ri_CopyMultiInsertBuffer == NULL)
-			CopyMultiInsertInfoSetupBuffer(&multiInsertInfo, cis);
-
 		/* Triggers and stuff need to be invoked in query context. */
 		MemoryContextSwitchTo(oldcontext);
 
@@ -779,13 +782,17 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		}
 		else
 		{
+			if (cis->result_relation_info->ri_CopyMultiInsertBuffer == NULL)
+				CopyMultiInsertInfoSetupBuffer(&multiInsertInfo, cis);
+
 			/*
 			 * Prepare to queue up tuple for later batch insert into
 			 * current chunk.
 			 */
 			TupleTableSlot *batchslot;
 
-			batchslot = CopyMultiInsertInfoNextFreeSlot(&multiInsertInfo, resultRelInfo);
+			batchslot =
+				CopyMultiInsertInfoNextFreeSlot(&multiInsertInfo, cis->result_relation_info);
 
 			if (NULL != cis->hyper_to_chunk_map)
 				myslot = execute_attr_map_slot(cis->hyper_to_chunk_map->attrMap, myslot, batchslot);
