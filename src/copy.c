@@ -468,17 +468,14 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	/* Update how many tuples are stored and their size */
 	miinfo->bufferedTuples++;
 
-	Size data_size =
-		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
-	miinfo->bufferedBytes += data_size;
-
-	/*
-	TODO
 	#if PG14_GE
 		int tuplen = cstate->line_buf.len;
 		miinfo->bufferedBytes += tuplen;
+	#else
+		Size data_size =
+			heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+		miinfo->bufferedBytes += data_size;
 	#endif
-	*/
 }
 
 static void
@@ -525,7 +522,7 @@ copy_table_to_chunk_error_callback(void *arg)
  * Tests if the timescale ts_insert_blocker trigger is the only trigger on the table.
  */
 static bool
-only_ts_block_trigger_is_configured(ResultRelInfo *resultRelInfo)
+is_only_ts_block_trigger_configured(ResultRelInfo *resultRelInfo)
 {
 	if (resultRelInfo->ri_TrigDesc == NULL)
 		return false;
@@ -717,8 +714,13 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		error_context_stack = &errcallback;
 	}
 
-	/* Ignore the timescale ts_insert_blocker trigger */
-	if (only_ts_block_trigger_is_configured(resultRelInfo))
+	/*
+	 * Multi-insert buffers can only be used if no triggers are defined on the
+	 * target table. Otherwise, the tuples may be inserted in an out-of-order manner,
+	 * which might violate the semantics of the triggers. However, the ts_block 
+	 * trigger on the hyper table can be ignored. 
+	 */
+	if (is_only_ts_block_trigger_configured(resultRelInfo))
 	{
 		has_before_insert_row_trig = false;
 		has_instead_insert_row_trig = false;
@@ -734,11 +736,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 			(resultRelInfo->ri_TrigDesc && resultRelInfo->ri_TrigDesc->trig_insert_instead_row);
 	}
 
-	/*
-	 * Multi-insert buffers can only be used if no triggers are defined on the
-	 * target table. Otherwise, the tuples may be inserted in an out-of-order manner,
-	 * which might violate the semantics of the triggers.
-	 */
+	/* Depending on the configured trigger, enable or disable the multi-insert buffers */
 	if (has_before_insert_row_trig || has_instead_insert_row_trig)
 	{
 		insertMethod = CIM_SINGLE;
