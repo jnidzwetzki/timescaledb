@@ -233,7 +233,9 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo, CopyMultiInsertBuffer *b
 
 	/*
 	 * Print error context information correctly, if one of the operations
-	 * below fail.
+	 * below fails. This is only possible in >= PG14. Until PG13, the
+	 * struct is kept internal in copy.c and we have no access to its members.
+	 * Since PG14, it is stored in copyfrom_internal.h.
 	 */
 #if PG14_GE
 	cstate->line_buf_valid = false;
@@ -468,14 +470,14 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	/* Update how many tuples are stored and their size */
 	miinfo->bufferedTuples++;
 
-	#if PG14_GE
-		int tuplen = cstate->line_buf.len;
-		miinfo->bufferedBytes += tuplen;
-	#else
-		Size data_size =
-			heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
-		miinfo->bufferedBytes += data_size;
-	#endif
+#if PG14_GE
+	int tuplen = cstate->line_buf.len;
+	miinfo->bufferedBytes += tuplen;
+#else
+	Size data_size =
+		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+	miinfo->bufferedBytes += data_size;
+#endif
 }
 
 static void
@@ -533,6 +535,21 @@ is_only_ts_block_trigger_configured(ResultRelInfo *resultRelInfo)
 	return (strncmp(resultRelInfo->ri_TrigDesc->triggers[0].tgname,
 					INSERT_BLOCKER_NAME,
 					NAMEDATALEN) == 0);
+}
+
+/*
+ * Move all CopyMultiInsertBuffers into a new memory context.
+ */
+static void
+move_cis_into_new_memory_context(CopyMultiInsertInfo *mii, MemoryContext destContext)
+{
+	ListCell *lc;
+
+	foreach (lc, mii->multiInsertBuffers)
+	{
+		CopyMultiInsertBuffer *buffer = (CopyMultiInsertBuffer *) lfirst(lc);
+		MemoryContextSetParent(buffer->cis->mctx, destContext);
+	}
 }
 
 /*
@@ -717,8 +734,8 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	/*
 	 * Multi-insert buffers can only be used if no triggers are defined on the
 	 * target table. Otherwise, the tuples may be inserted in an out-of-order manner,
-	 * which might violate the semantics of the triggers. However, the ts_block 
-	 * trigger on the hyper table can be ignored. 
+	 * which might violate the semantics of the triggers. However, the ts_block
+	 * trigger on the hyper table can be ignored.
 	 */
 	if (is_only_ts_block_trigger_configured(resultRelInfo))
 	{
@@ -766,10 +783,22 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		CHECK_FOR_INTERRUPTS();
 
 		/*
+		 * According to the setting 'timescaledb.max_open_chunks_per_insert',
+		 * chunks can be closed. In this case, the per-tuple memory context
+		 * becomes the parent of the ChunkInsertState memory context. The
+		 * ChunkInsertStates have to be available when the multi insert
+		 * buffers are flushed. Therefore, the parent is set to the current
+		 * memory context.
+		 */
+		if (insertMethod == CIM_MULTI)
+			move_cis_into_new_memory_context(&multiInsertInfo, oldcontext);
+
+		/*
 		 * Reset the per-tuple exprcontext. We do this after every tuple, to
 		 * clean-up after expression evaluations etc.
 		 */
 		ResetPerTupleExprContext(estate);
+
 		myslot = singleslot;
 		Assert(myslot != NULL);
 
@@ -783,6 +812,9 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 
 		ExecStoreVirtualTuple(myslot);
 
+		/* Triggers and stuff need to be invoked in query context. */
+		MemoryContextSwitchTo(oldcontext);
+
 		/* Calculate the tuple's point in the N-dimensional hyperspace */
 		point = ts_hyperspace_calculate_point(ht->space, myslot);
 
@@ -793,9 +825,6 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 													   bistate);
 
 		Assert(cis != NULL);
-
-		/* Triggers and stuff need to be invoked in query context. */
-		MemoryContextSwitchTo(oldcontext);
 
 		/* Convert the tuple to match the chunk's rowtype */
 		if (insertMethod == CIM_SINGLE)
