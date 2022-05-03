@@ -112,9 +112,8 @@ typedef struct CopyMultiInsertInfo
  */
 typedef enum CopyInsertMethod
 {
-	CIM_SINGLE,			  /* use table_tuple_insert or fdw routine */
-	CIM_MULTI,			  /* always use table_multi_insert */
-	CIM_MULTI_CONDITIONAL /* use table_multi_insert only if valid */
+	CIM_SINGLE, /* use table_tuple_insert or fdw routine */
+	CIM_MULTI,	/* always use table_multi_insert */
 } CopyInsertMethod;
 
 static CopyChunkState *
@@ -577,7 +576,8 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		.arg = arg,
 	};
 	CommandId mycid = GetCurrentCommandId(true);
-	CopyInsertMethod insertMethod;
+	CopyInsertMethod insertMethod;				 /* The general insert method */
+	CopyInsertMethod currentTupleInsertMethod;	 /* The insert method for the current tuple */
 	CopyMultiInsertInfo multiInsertInfo = { 0 }; /* pacify compiler */
 	int ti_options = 0;							 /* start with default options for insert */
 	BulkInsertState bistate = NULL;
@@ -826,8 +826,14 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 
 		Assert(cis != NULL);
 
+		currentTupleInsertMethod = insertMethod;
+
+		// Insert tuples into compressed chunks tuple by tuple
+		if (cis->compress_info)
+			currentTupleInsertMethod = CIM_SINGLE;
+
 		/* Convert the tuple to match the chunk's rowtype */
-		if (insertMethod == CIM_SINGLE)
+		if (currentTupleInsertMethod == CIM_SINGLE)
 		{
 			if (NULL != cis->hyper_to_chunk_map)
 				myslot = execute_attr_map_slot(cis->hyper_to_chunk_map->attrMap, myslot, cis->slot);
@@ -955,7 +961,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 			}
 			else
 			{
-				if (insertMethod == CIM_SINGLE)
+				if (currentTupleInsertMethod == CIM_SINGLE)
 				{
 					/* OK, store the tuple and create index entries for it */
 					table_tuple_insert(resultRelInfo->ri_RelationDesc,
