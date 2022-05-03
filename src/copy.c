@@ -1315,7 +1315,7 @@ timescaledb_DoCopy(const CopyStmt *stmt, const char *queryString, uint64 *proces
 	table_close(rel, NoLock);
 
 #if PG14_LT
-	if (copycontext)
+	if (MemoryContextIsValid(copycontext))
 		MemoryContextDelete(copycontext);
 #endif
 }
@@ -1392,7 +1392,9 @@ timescaledb_move_from_table_to_chunks(Hypertable *ht, LOCKMODE lockmode)
 	heap_endscan(scandesc);
 	UnregisterSnapshot(snapshot);
 	table_close(rel, lockmode);
-	MemoryContextDelete(copycontext);
+
+	if (MemoryContextIsValid(copycontext))
+		MemoryContextDelete(copycontext);
 
 	ExecuteTruncate(&stmt);
 }
