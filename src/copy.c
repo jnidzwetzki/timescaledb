@@ -554,8 +554,8 @@ move_cis_into_new_memory_context(CopyMultiInsertInfo *mii, MemoryContext destCon
  * Use COPY FROM to copy data from file to relation.
  */
 static uint64
-copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*callback)(void *),
-		 void *arg)
+copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryContext copycontext,
+		 void (*callback)(void *), void *arg)
 {
 	ResultRelInfo *resultRelInfo;
 	ResultRelInfo *saved_resultRelInfo = NULL;
@@ -786,11 +786,11 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 		 * chunks can be closed. In this case, the per-tuple memory context
 		 * becomes the parent of the ChunkInsertState memory context. The
 		 * ChunkInsertStates have to be available when the multi insert
-		 * buffers are flushed. Therefore, the parent is set to the current
+		 * buffers are flushed. Therefore, the parent is set to the copy
 		 * memory context.
 		 */
 		if (insertMethod == CIM_MULTI)
-			move_cis_into_new_memory_context(&multiInsertInfo, oldcontext);
+			move_cis_into_new_memory_context(&multiInsertInfo, copycontext);
 
 		/*
 		 * Reset the per-tuple exprcontext. We do this after every tuple, to
@@ -1224,6 +1224,7 @@ timescaledb_DoCopy(const CopyStmt *stmt, const char *queryString, uint64 *proces
 	List *attnums = NIL;
 	Node *where_clause = NULL;
 	ParseState *pstate;
+	MemoryContext copycontext;
 
 	/* Disallow COPY to/from file or program except to superusers. */
 	if (!pipe && !superuser())
@@ -1296,12 +1297,27 @@ timescaledb_DoCopy(const CopyStmt *stmt, const char *queryString, uint64 *proces
 	if (hypertable_is_distributed(ht))
 		*processed = ts_cm_functions->distributed_copy(stmt, ccstate, attnums);
 	else
-		*processed = copyfrom(ccstate, pstate->p_rtable, ht, CopyFromErrorCallback, cstate);
+	{
+#if PG14_GE
+		// Take the copy memory context from cstate, when we can access the struct
+		copycontext = cstate->copycontext;
+#else
+		// Or create a new context
+		copycontext = AllocSetContextCreate(CurrentMemoryContext, "COPY", ALLOCSET_DEFAULT_SIZES);
+#endif
+		*processed =
+			copyfrom(ccstate, pstate->p_rtable, ht, copycontext, CopyFromErrorCallback, cstate);
+	}
 
 	copy_chunk_state_destroy(ccstate);
 	EndCopyFrom(cstate);
 	free_parsestate(pstate);
 	table_close(rel, NoLock);
+
+#if PG14_LT
+	if (copycontext)
+		MemoryContextDelete(copycontext);
+#endif
 }
 
 static bool
@@ -1337,6 +1353,7 @@ timescaledb_move_from_table_to_chunks(Hypertable *ht, LOCKMODE lockmode)
 	ParseState *pstate = make_parsestate(NULL);
 	Snapshot snapshot;
 	List *attnums = NIL;
+	MemoryContext copycontext;
 
 	RangeVar rv = {
 		.schemaname = NameStr(ht->fd.schema_name),
@@ -1359,15 +1376,23 @@ timescaledb_move_from_table_to_chunks(Hypertable *ht, LOCKMODE lockmode)
 		attnums = lappend_int(attnums, attr->attnum);
 	}
 
+	copycontext = AllocSetContextCreate(CurrentMemoryContext, "COPY", ALLOCSET_DEFAULT_SIZES);
+
 	copy_constraints_and_check(pstate, rel, attnums);
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
 	scandesc = table_beginscan(rel, snapshot, 0, NULL);
 	ccstate = copy_chunk_state_create(ht, rel, next_copy_from_table_to_chunks, NULL, scandesc);
-	copyfrom(ccstate, pstate->p_rtable, ht, copy_table_to_chunk_error_callback, scandesc);
+	copyfrom(ccstate,
+			 pstate->p_rtable,
+			 ht,
+			 copycontext,
+			 copy_table_to_chunk_error_callback,
+			 scandesc);
 	copy_chunk_state_destroy(ccstate);
 	heap_endscan(scandesc);
 	UnregisterSnapshot(snapshot);
 	table_close(rel, lockmode);
+	MemoryContextDelete(copycontext);
 
 	ExecuteTruncate(&stmt);
 }
