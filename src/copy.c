@@ -764,7 +764,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 	else
 	{
 		insertMethod = CIM_MULTI;
-		ereport(DEBUG1, (errmsg("Using buffered copy operation (CIM_MULTI).")));
+		ereport(DEBUG1, (errmsg("Using optimized multi-buffer copy operation (CIM_MULTI).")));
 		CopyMultiInsertInfoInit(&multiInsertInfo,
 								resultRelInfo,
 								ccstate,

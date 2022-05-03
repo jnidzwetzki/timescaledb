@@ -111,3 +111,57 @@ COPY hyper TO STDOUT DELIMITER ',';
 -- notice.
 COPY (SELECT * FROM hyper) TO STDOUT DELIMITER ',';
 
+----------------------------------------------------------------
+-- Testing multi-buffer optimization.
+----------------------------------------------------------------
+
+CREATE TABLE "hyper_copy" (
+    "time" bigint NOT NULL,
+    "value" double precision NOT NULL
+);
+
+SELECT create_hypertable('hyper_copy', 'time', chunk_time_interval => 10); 
+
+-- First copy call with default client_min_messages, to get rid of the 
+-- building index "_hyper_XXX_chunk_hyper_copy_time_idx" on table "_hyper_XXX_chunk" serially
+-- messages
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+
+SET client_min_messages TO DEBUG1;
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+
+SELECT count(*) FROM hyper_copy;
+
+-- Limit number of open chunks
+
+SET timescaledb.max_open_chunks_per_insert = 1;
+
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+
+SELECT count(*) FROM hyper_copy;
+
+-- Trigger disable the multi-buffer optimization
+
+CREATE OR REPLACE FUNCTION empty_test_trigger()
+    RETURNS TRIGGER LANGUAGE PLPGSQL AS
+$BODY$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END
+$BODY$;
+
+CREATE TRIGGER hyper_copy_trigger_insert_after
+    AFTER INSERT ON hyper_copy
+    FOR EACH ROW EXECUTE FUNCTION empty_test_trigger(); 
+
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+
+SELECT count(*) FROM hyper_copy;
+
+RESET client_min_messages;
+RESET timescaledb.max_open_chunks_per_insert;
+
+

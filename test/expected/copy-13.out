@@ -167,3 +167,63 @@ NOTICE:  hypertable data are in the chunks, no data will be copied
 COPY (SELECT * FROM hyper) TO STDOUT DELIMITER ',';
 1,1,1
 1,2,1
+----------------------------------------------------------------
+-- Testing multi-buffer optimization.
+----------------------------------------------------------------
+CREATE TABLE "hyper_copy" (
+    "time" bigint NOT NULL,
+    "value" double precision NOT NULL
+);
+SELECT create_hypertable('hyper_copy', 'time', chunk_time_interval => 10); 
+    create_hypertable    
+-------------------------
+ (6,public,hyper_copy,t)
+(1 row)
+
+-- First copy call with default client_min_messages, to get rid of the 
+-- building index "_hyper_XXX_chunk_hyper_copy_time_idx" on table "_hyper_XXX_chunk" serially
+-- messages
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+SET client_min_messages TO DEBUG1;
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+DEBUG:  Using optimized multi-buffer copy operation (CIM_MULTI).
+SELECT count(*) FROM hyper_copy;
+ count 
+-------
+    50
+(1 row)
+
+-- Limit number of open chunks
+SET timescaledb.max_open_chunks_per_insert = 1;
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+DEBUG:  Using optimized multi-buffer copy operation (CIM_MULTI).
+SELECT count(*) FROM hyper_copy;
+ count 
+-------
+    75
+(1 row)
+
+-- Trigger disable the multi-buffer optimization
+CREATE OR REPLACE FUNCTION empty_test_trigger()
+    RETURNS TRIGGER LANGUAGE PLPGSQL AS
+$BODY$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END
+$BODY$;
+CREATE TRIGGER hyper_copy_trigger_insert_after
+    AFTER INSERT ON hyper_copy
+    FOR EACH ROW EXECUTE FUNCTION empty_test_trigger(); 
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+DEBUG:  Using normal unbuffered copy operation (CIM_SINGLE) because triggers are defined on the destination table.
+SELECT count(*) FROM hyper_copy;
+ count 
+-------
+   100
+(1 row)
+
+RESET client_min_messages;
+RESET timescaledb.max_open_chunks_per_insert;
