@@ -473,8 +473,7 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	int tuplen = cstate->line_buf.len;
 	miinfo->bufferedBytes += tuplen;
 #else
-	Size data_size =
-		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+	Size data_size = GetPerTupleMemoryContext(miinfo->estate)->mem_allocated;
 	miinfo->bufferedBytes += data_size;
 #endif
 }
@@ -928,6 +927,8 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, void (*call
 
 			if (cis->compress_info)
 			{
+				Assert(currentTupleInsertMethod == CIM_SINGLE);
+
 				TupleTableSlot *compress_slot =
 					ts_cm_functions->compress_row_exec(cis->compress_info->compress_state, myslot);
 				/* After Row triggers do not work with compressed chunks. So
