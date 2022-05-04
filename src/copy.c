@@ -473,7 +473,9 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	int tuplen = cstate->line_buf.len;
 	miinfo->bufferedBytes += tuplen;
 #else
-	Size data_size = GetPerTupleMemoryContext(miinfo->estate)->mem_allocated;
+
+	Size data_size =
+		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
 	miinfo->bufferedBytes += data_size;
 #endif
 }
@@ -1005,7 +1007,14 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 					 * buffers out to their tables.
 					 */
 					if (CopyMultiInsertInfoIsFull(&multiInsertInfo))
+					{
+						ereport(DEBUG2,
+								(errmsg("Flush called with %d bytes and %d buffered tuples",
+										multiInsertInfo.bufferedBytes,
+										multiInsertInfo.bufferedTuples)));
+
 						CopyMultiInsertInfoFlush(&multiInsertInfo, resultRelInfo);
+					}
 				}
 			}
 
