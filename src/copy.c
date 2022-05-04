@@ -1302,7 +1302,7 @@ timescaledb_DoCopy(const CopyStmt *stmt, const char *queryString, uint64 *proces
 		// Take the copy memory context from cstate, when we can access the struct
 		copycontext = cstate->copycontext;
 #else
-		// Or create a new context
+		// Or create a new memory context
 		copycontext = AllocSetContextCreate(CurrentMemoryContext, "COPY", ALLOCSET_DEFAULT_SIZES);
 #endif
 		*processed =

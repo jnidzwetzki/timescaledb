@@ -214,6 +214,21 @@ BEGIN
     RETURN NEW;
 END
 $BODY$;
+-- Before trigger
+CREATE TRIGGER hyper_copy_trigger_insert_before
+    BEFORE INSERT ON hyper_copy
+    FOR EACH ROW EXECUTE FUNCTION empty_test_trigger(); 
+\copy hyper_copy FROM data/copy_data.csv WITH csv header;
+DEBUG:  Using normal unbuffered copy operation (CIM_SINGLE) because triggers are defined on the destination table.
+SELECT count(*) FROM hyper_copy;
+ count 
+-------
+   100
+(1 row)
+
+DROP TRIGGER hyper_copy_trigger_insert_before ON hyper_copy;
+DEBUG:  EventTriggerInvoke 16821
+-- After trigger
 CREATE TRIGGER hyper_copy_trigger_insert_after
     AFTER INSERT ON hyper_copy
     FOR EACH ROW EXECUTE FUNCTION empty_test_trigger(); 
@@ -222,7 +237,7 @@ DEBUG:  Using normal unbuffered copy operation (CIM_SINGLE) because triggers are
 SELECT count(*) FROM hyper_copy;
  count 
 -------
-   100
+   125
 (1 row)
 
 RESET client_min_messages;
