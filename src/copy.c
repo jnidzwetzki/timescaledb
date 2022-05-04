@@ -473,10 +473,19 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	int tuplen = cstate->line_buf.len;
 	miinfo->bufferedBytes += tuplen;
 #else
+	/*
+	 * Determine the size of the tuple by calculating the size of the per-tuple memory context. The
+	 * per-tuple memory context is deleted in the copyfrom function per processed tuple. So, at this
+	 * time only the tuple is stored in this context.
+	 */
+	MemoryContextCounters context_counter;
+	Size used_memory;
 
-	Size data_size =
-		heap_compute_data_size(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
-	miinfo->bufferedBytes += data_size;
+	MemoryContext tuple_context = GetPerTupleMemoryContext(miinfo->estate);
+	tuple_context->methods->stats(tuple_context, false, 0, &context_counter);
+	used_memory = context_counter.totalspace - context_counter.freespace;
+	Assert(used_memory > 0);
+	miinfo->bufferedBytes += used_memory;
 #endif
 }
 
