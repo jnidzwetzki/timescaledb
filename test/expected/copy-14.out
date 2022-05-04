@@ -229,7 +229,6 @@ SELECT count(*) FROM hyper_copy;
 DROP TRIGGER hyper_copy_trigger_insert_before ON hyper_copy;
 DEBUG:  EventTriggerInvoke 16821
 -- After trigger
-
 CREATE TRIGGER hyper_copy_trigger_insert_after
     AFTER INSERT ON hyper_copy
     FOR EACH ROW EXECUTE FUNCTION empty_test_trigger(); 
