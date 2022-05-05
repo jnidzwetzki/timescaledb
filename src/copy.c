@@ -231,10 +231,12 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo, CopyMultiInsertBuffer *b
 	TupleTableSlot **slots = buffer->slots;
 
 	/*
-	 * Print error context information correctly, if one of the operations
-	 * below fails. This is only possible in >= PG14. Until PG13, the
-	 * struct is kept internal in copy.c and we have no access to its members.
-	 * Since PG14, it is stored in copyfrom_internal.h.
+	 * Add context information to the copy state, which is used to display
+	 * detailed error messages. Providing this information is only possible
+	 * in PG >= 14. Until PG13 the CopyFromState structure is kept internally
+	 * in copy.c and no access to its members is possible. Since PG14, the
+	 * structure is stored in copyfrom_internal.h and the members can be
+	 * accessed.
 	 */
 #if PG14_GE
 	cstate->line_buf_valid = false;
@@ -474,16 +476,15 @@ CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri, TupleT
 	miinfo->bufferedBytes += tuplen;
 #else
 	/*
-	 * Determine the size of the tuple by calculating the size of the per-tuple memory context. The
-	 * per-tuple memory context is deleted in the copyfrom function per processed tuple. So, at this
-	 * time only the tuple is stored in this context.
+	 * Determine the size of the tuple by calculating the size of the per-tuple
+	 * memory context. The per-tuple memory context is deleted in the copyfrom
+	 * function per processed tuple. So, at this time only the tuple is stored
+	 * in this context.
 	 */
 	MemoryContextCounters context_counter;
-	Size used_memory;
-
 	MemoryContext tuple_context = GetPerTupleMemoryContext(miinfo->estate);
 	tuple_context->methods->stats(tuple_context, false, 0, &context_counter);
-	used_memory = context_counter.totalspace - context_counter.freespace;
+	Size used_memory = context_counter.totalspace - context_counter.freespace;
 	Assert(used_memory > 0);
 	miinfo->bufferedBytes += used_memory;
 #endif
@@ -586,7 +587,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 		.arg = arg,
 	};
 	CommandId mycid = GetCurrentCommandId(true);
-	CopyInsertMethod insertMethod;				 /* The general insert method */
+	CopyInsertMethod insertMethod;				 /* The insert method for the table */
 	CopyInsertMethod currentTupleInsertMethod;	 /* The insert method for the current tuple */
 	CopyMultiInsertInfo multiInsertInfo = { 0 }; /* pacify compiler */
 	int ti_options = 0;							 /* start with default options for insert */
@@ -745,7 +746,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 	 * Multi-insert buffers can only be used if no triggers are defined on the
 	 * target table. Otherwise, the tuples may be inserted in an out-of-order manner,
 	 * which might violate the semantics of the triggers. However, the ts_block
-	 * trigger on the hyper table can be ignored.
+	 * trigger on the hypertable can be ignored.
 	 */
 	if (is_only_ts_block_trigger_configured(resultRelInfo))
 	{
