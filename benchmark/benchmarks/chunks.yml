@@ -1,0 +1,56 @@
+name: Execution time of the now() operation on chunks
+
+generate-data:
+  steps: 
+    - name: Delete table metrics1k
+      run: |
+        DROP TABLE IF EXISTS metrics1k;
+
+    - name: Delete table metrics5k
+      run: |
+        DROP TABLE IF EXISTS metrics5k;
+
+    - name: Create table metrics1k
+      run: |
+        create table metrics1k(time timestamptz, device int, value float);
+
+    - name: Create table metrics5k
+      run: |
+        create table metrics5k(time timestamptz, device int, value float);
+
+    - name: Create hypertable metrics1k
+      run: |
+        select create_hypertable('metrics1k','time',chunk_time_interval:='1d'::interval);
+  
+    - name: Create hypertable metrics5k
+      run: |
+        select create_hypertable('metrics5k','time',chunk_time_interval:='1d'::interval);
+
+    - name: Insert data into metrics1k
+      run: |
+        insert into metrics1k select t,1,random() from generate_series('1997-01-01','2000-01-01','1d'::interval) g(t);
+  
+    - name: Insert data into metrics5k
+      run: |
+        insert into metrics5k select t,1,random() from generate_series('1985-01-01','2000-01-01','1d'::interval) g(t);
+
+    - name: Insert last date into metrics1k
+      run: |
+        insert into metrics1k select '2023-01-01',1,random();
+  
+    - name: Insert last date into metrics5k
+      run: |
+        insert into metrics5k select '2023-01-01',1,random();
+
+prepare-benchmark:
+  steps:
+
+benchmark:
+  steps: 
+    - name: Execution on metrics1k
+      run: |
+        select count(*) from metrics1k where time > now() - '5m'::interval;
+
+    - name: Execution on metrics5k
+      run: |
+        select count(*) from metrics5k where time > now() - '5m'::interval;

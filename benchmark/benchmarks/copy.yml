@@ -1,0 +1,53 @@
+name: COPY data into table
+
+generate-data:
+  steps: 
+    - name: Drop old data table
+      run: |
+        DROP TABLE IF EXISTS benchmark_data;
+
+    - name: Create data table
+      run: |
+        CREATE TABLE benchmark_data(
+          time timestamp NOT NULL,
+          sensor_id integer NOT NULL,
+          cpu double precision,
+          temperature double precision
+        );
+
+    - name: Generate benchmark data
+      run: |
+        INSERT INTO benchmark_data
+        SELECT time + (INTERVAL '1 minute' * random()) AS time,
+        sensor_id,
+        random() AS cpu,
+        random()* 100 AS temperature
+        FROM
+        generate_series(now() - INTERVAL '1 months', now() - INTERVAL '1 day', INTERVAL '1 minutes') AS g1(time),
+        generate_series(1, 100, 1 ) AS g2(sensor_id)
+        ORDER BY time;
+
+    - name: Export benchmark data
+      run: |
+        COPY benchmark_data TO '%%WORK_DIR%%/sensor_data.csv' DELIMITER ',' CSV HEADER;
+
+
+prepare-benchmark:
+  steps:
+    - name: Create table
+      run: |
+        CREATE TABLE IF EXISTS sensor_data(
+          time timestamp NOT NULL,
+          sensor_id integer NOT NULL,
+          cpu double precision,
+          temperature double precision
+        );
+
+benchmark:
+  steps: 
+    - name: COPY data into table (1st import - create chunks)
+      run: |
+        COPY sensor_data from '%%WORK_DIR%%/sensor_data.csv' with csv header;
+    - name: COPY data into table (2nd import - append to existing chunks)
+      run: |
+        COPY sensor_data from '%%WORK_DIR%%/sensor_data.csv' with csv header;
