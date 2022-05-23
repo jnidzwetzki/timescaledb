@@ -21,7 +21,7 @@ def parse_pgbench_result(pg_result: str) -> list[float]:
         if query_results_found is False:
             continue
 
-        found_numbers = re.findall(r"[-+]?(?:\d*\.\d+|\d+)", line)
+        found_numbers = re.findall(r"(?:\d*\.\d+|\d+)", line)
 
         if len(found_numbers) < 1:
             raise Exception("Unable to find time in line: " + line)

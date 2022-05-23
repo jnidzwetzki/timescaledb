@@ -56,10 +56,17 @@ def run() -> None:
     )
 
     parser.add_argument(
-        "--pg",
-        dest="pg",
+        "--pgsource",
+        dest="pgsource",
         default=None,
-        help="The PostgreSQL installation to use"
+        help="The PostgreSQL source directory to use"
+    )
+
+    parser.add_argument(
+        "--pgpath",
+        dest="pgpath",
+        default=None,
+        help="The PostgreSQL installation directory to use"
     )
 
     parser.add_argument(
@@ -94,4 +101,4 @@ def execute_benchmarks_with_commits(args: Any) -> None:
               file=sys.stderr)
         sys.exit(1)
     execute_benchmarks_by_commits(
-        args.benchmarks, commits[0], commits[1], args.pg, args.repository)
+        args.benchmarks, commits[0], commits[1], args.pgsource, args.pgpath, args.repository)

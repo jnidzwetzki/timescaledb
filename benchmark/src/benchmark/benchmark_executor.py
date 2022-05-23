@@ -1,3 +1,4 @@
+import os
 import sys
 import typing
 import logging
@@ -12,7 +13,7 @@ from urllib.parse import urlparse
 import psycopg2
 import yaml
 
-from benchmark.pgbench_util import parse_pgbench_result
+from .pgbench_util import parse_pgbench_result
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +116,11 @@ def execute_benchmark(benchmark_spec: Any, connection_url: str, tmpdir: str) -> 
 
     report_benchmark_results(benchmark_result)
 
+
 def report_benchmark_results(results: list[float]) -> None:
     for result in results:
         print(f"Result: {result}")
+
 
 def execute_steps_directly(connection_url: str, tmpdir: str, steps: list[str]) -> None:
     try:
@@ -142,11 +145,13 @@ def execute_steps_directly(connection_url: str, tmpdir: str, steps: list[str]) -
         print(f'{error}')
         sys.exit(1)
 
+
 def execute_steps_with_pgbench(benchmark_steps: dict[Any, Any], executions: int,
                                connection_url: str, tmpdir: str) -> str:
 
     # Write file for pgbench
-    with tempfile.NamedTemporaryFile(dir=tmpdir, delete=False, mode="w", encoding="utf-8") as pgbench_file:
+    with tempfile.NamedTemporaryFile(dir=tmpdir, delete=False,
+                                     mode="w", encoding="utf-8") as pgbench_file:
         steps = benchmark_steps
         for step in steps:
             query = replace_placeholder_in_query(step['run'], tmpdir)
@@ -163,7 +168,9 @@ def execute_steps_with_pgbench(benchmark_steps: dict[Any, Any], executions: int,
     return pg_result
 
 
-def execute_pgbench_file(connection_url: str, executions: int, pgbench_file: str, pg_bench: str) -> str:
+def execute_pgbench_file(connection_url: str, executions: int,
+                         pgbench_file: str, pg_bench: str) -> str:
+
     logger.debug("Executing file %s on connection %s with pgbench %s (%i times)",
                  pgbench_file, connection_url, pg_bench, executions)
 
@@ -208,11 +215,13 @@ def execute_pgbench_file(connection_url: str, executions: int, pgbench_file: str
     # Execute pgbench directly or pass the password to stdin of command
     result = None
     with subprocess.Popen(
-            pgbench_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        pgbench_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE) as process:
         input_data = ''
         if password:
             input_data = password
         std_out, std_err = process.communicate(input=input_data.encode())
+        process.wait()
 
         if process.returncode != 0:
             logger.error("Pgbench returned not zero return code %s",
@@ -233,13 +242,15 @@ def locate_pg_bench() -> str:
     return pg_bench
 
 
-def execute_benchmarks_on_connections(included_benchmarks: str, connections: list[str]) -> None:
+def execute_benchmarks_on_connections(included_benchmarks: str,
+                                      connections: list[str]) -> None:
 
     benchmark_specs = benchmark_files_find_and_parse(included_benchmarks)
 
     with tempfile.TemporaryDirectory() as tmpdir:
 
-        # Generate benchmark data (the first connection is used to generate the benchmark data)
+        # Generate benchmark data (the first connection is used
+        # to generate the benchmark data)
         for benchmark_spec in benchmark_specs:
             generate_benchmark_data(benchmark_spec, connections[0], tmpdir)
 
@@ -266,41 +277,87 @@ def execute_benchmarks_on_connections(included_benchmarks: str, connections: lis
     print("*** All benchmarks are executed - DONE")
 
 
+def build_and_execute_commit(included_benchmarks: str, commit: str, pg_source: str,
+                             pg_path: str, tmpdir: str) -> None:
+
+    user = os.getlogin()
+    database = "benchmarkdb"
+
+    logger.debug("Build commit %s", commit)
+    git_command = distutils.spawn.find_executable("git")
+
+    # Configure commit
+    print("*** Configure commit %s", commit)
+    repo_dir = os.path.join(tmpdir, 'timescaledb')
+    os.chdir(repo_dir)
+    checkout_command = [git_command, 'checkout', commit]
+    subprocess.run(checkout_command, check=True)
+
+    # Build commit
+    configure_command = ['./bootstrap', ' -DCMAKE_BUILD_TYPE=Debug',
+                         '-DPG_SOURCE_DIR=' + pg_source, '-DPG_PATH=' + pg_path,
+                         '-DREQUIRE_ALL_TESTS=ON', '-DLINTER_STRICT=ON', '-DASSERTIONS=ON',
+                         '-DCMAKE_EXPORT_COMPILE_COMMANDS=YES', '-DSEND_TELEMETRY_DEFAULT=NO']
+
+    # Ensure old data is overwritten
+    print("*** Building commit %s", commit)
+    my_env = os.environ.copy()
+    my_env["BUILD_FORCE_REMOVE"] = "true"
+    subprocess.run(configure_command, check=True, env=my_env)
+    os.chdir("build")
+    subprocess.run("make", check=True)
+
+    with tempfile.TemporaryDirectory() as pg_data:
+
+        # Start PostgreSQL for commit
+        print("*** Starting Postgres for commit %s", commit)
+        initdb_path = os.path.join(pg_path, 'bin', 'initdb')
+        init_command = [initdb_path, '-D', pg_data]
+        subprocess.run(init_command, check=True)
+
+        createdb_path = os.path.join(pg_path, 'bin', 'createdb')
+        createdb_command = [createdb_path, database]
+        subprocess.run(createdb_command, check=True)
+
+        pgctl_path = os.path.join(pg_path, 'bin', 'pg_ctl')
+        start_command = [pgctl_path, '-D', pg_data,
+                         '-l', os.path.join(pg_data, "log"), 'start']
+        subprocess.run(start_command, check=True)
+
+        # Process benchmarks for commit
+        print("*** Executing benchmarks for commit %s", commit)
+        benchmark_files = benchmark_files_find(included_benchmarks)
+
+        connection = "pgsql://" + user + "@localhost/" + database
+        for benchmark_file in benchmark_files:
+            execute_benchmark(benchmark_file, connection, tmpdir)
+
+        # Stop Postgres for commit
+        print("*** Stopping postgres for commit %s", commit)
+        stop_command = [pgctl_path, '-D', pg_data,
+                        '-l', os.path.join(pg_data, "log"), 'stop']
+        subprocess.run(stop_command, check=True)
+
+
 def execute_benchmarks_by_commits(included_benchmarks: str, commit1: str,
-                                  commit2: str, pg_path: str, repository: str) -> None:
+                                  commit2: str, pg_source: str, pg_path: str, 
+                                  repository: str) -> None:
 
-    logger.debug("Performing benchmark of commit %s and %s of repository %s with PG %s",
-                 commit1, commit2, repository, pg_path)
+    logger.debug("Performing benchmark of commit %s and %s of repository %s with PG %s %s",
+                 commit1, commit2, repository, pg_source, pg_path)
 
-    benchmark_files = benchmark_files_find(included_benchmarks)
     with tempfile.TemporaryDirectory() as tmpdir:
-
         # Checkout repository
         print("*** Cloning repository %s", repository)
+        os.chdir(tmpdir)
+        git_command = distutils.spawn.find_executable("git")
+        clone_command = [git_command, 'clone', repository, 'timescaledb']
+        logger.debug("Executing clone command %s", clone_command)
+        subprocess.run(clone_command, check=True)
 
-        # Build commit 1
-        print("*** Building commit %s", commit1)
-
-        # Start PostgreSQL for commit 1
-        print("*** Starting Postgres for commit %s", commit1)
-
-        # Process benchmarks for commit 1
-        print("*** Executing benchmarks for commit %s", commit1)
-        for benchmark_file in benchmark_files:
-            execute_benchmark(benchmark_file, None, tmpdir)
-
-        # Stop Postgres for commit 1
-        print("*** Stopping postgres for commit %s", commit1)
-
-        # Build commit w
-        print("*** Building commit %s", commit2)
-
-        # Start PostgreSQL for commit w
-
-        # Process benchmarks for commit w
-        for benchmark_file in benchmark_files:
-            execute_benchmark(benchmark_file, None, tmpdir)
-
-        # Stop Postgres for commit w
+        build_and_execute_commit(
+            included_benchmarks, commit1, pg_source, pg_path, tmpdir)
+        build_and_execute_commit(
+            included_benchmarks, commit2, pg_source, pg_path, tmpdir)
 
     print("*** Benchmarks done")
