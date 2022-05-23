@@ -1,6 +1,8 @@
 name: Execution time of the now() operation on chunks
 
 generate-data:
+
+prepare-benchmark:
   steps: 
     - name: Delete table metrics1k
       run: |
@@ -41,9 +43,6 @@ generate-data:
     - name: Insert last date into metrics5k
       run: |
         insert into metrics5k select '2023-01-01',1,random();
-
-prepare-benchmark:
-  steps:
 
 benchmark:
   steps: 

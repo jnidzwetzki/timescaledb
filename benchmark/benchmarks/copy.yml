@@ -36,7 +36,7 @@ prepare-benchmark:
   steps:
     - name: Create table
       run: |
-        CREATE TABLE IF EXISTS sensor_data(
+        CREATE TABLE IF NOT EXISTS sensor_data(
           time timestamp NOT NULL,
           sensor_id integer NOT NULL,
           cpu double precision,
@@ -44,7 +44,11 @@ prepare-benchmark:
         );
 
 benchmark:
-  steps: 
+  executions: 1
+  steps:
+    - name: Truncate old data
+      run: |
+        TRUNCATE sensor_data;
     - name: COPY data into table (1st import - create chunks)
       run: |
         COPY sensor_data from '%%WORK_DIR%%/sensor_data.csv' with csv header;

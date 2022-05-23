@@ -18,3 +18,14 @@ python -m src.benchmark --with-connection pgsq://jan@localhost:5432/test2 --with
 ```
 python -m src.benchmark  -v -v --benchmark="chu*"
 ```
+
+## Benchmark Files
+* `generate-data` is executed one time per benchmark and should be used to generate datasets and store them in the filesystem
+* `prepare-benchmark` is executed one time per connection and can be used to create tables that should be used later in the benchmark
+* `benchmark` is executed one time per connection and the execution time per step is measured (performed by pgbench)
+
+## Run Unit-Tests
+```shell
+python -m unittest discover
+python -m unittest tests.test_pgbench
+```
