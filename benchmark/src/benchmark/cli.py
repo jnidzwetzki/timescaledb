@@ -3,8 +3,8 @@ import logging
 
 from typing import Any
 from argparse import ArgumentParser
-from .benchmark_executor import execute_benchmarks_on_connections
-from .benchmark_executor import execute_benchmarks_by_commits
+from .benchmark_executor import BenchmarkExecutor
+from .result_reporter import ConsoleResultReporter
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -91,7 +91,10 @@ def execute_benchmarks_with_connections(args: Any) -> None:
     if len(args.with_connection) < 2:
         print("You must at least specify two connections", file=sys.stderr)
         sys.exit(1)
-    execute_benchmarks_on_connections(args.benchmarks, args.with_connection)
+
+    result_reporter = ConsoleResultReporter()
+    benchmark_executor = BenchmarkExecutor(args.benchmarks, result_reporter)
+    benchmark_executor.execute_benchmarks_on_connections(args.with_connection)
 
 
 def execute_benchmarks_with_commits(args: Any) -> None:
@@ -100,5 +103,8 @@ def execute_benchmarks_with_commits(args: Any) -> None:
         print("Please provide the commits in the format commit1..commit2",
               file=sys.stderr)
         sys.exit(1)
-    execute_benchmarks_by_commits(
-        args.benchmarks, commits[0], commits[1], args.pgsource, args.pgpath, args.repository)
+
+    result_reporter = ConsoleResultReporter()
+    benchmark_executor = BenchmarkExecutor(args.benchmarks, result_reporter)
+    benchmark_executor.execute_benchmarks_by_commits(
+        commits[0], commits[1], args.pgsource, args.pgpath, args.repository)
