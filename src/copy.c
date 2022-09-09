@@ -85,6 +85,9 @@
  */
 #define MAX_BUFFERED_BYTES 65535
 
+/* Trim the list of buffers back down to this number after flushing */
+#define MAX_PARTITION_BUFFERS 32
+
 /* Stores multi-insert data related to a single relation in CopyFrom. */
 typedef struct TSCopyMultiInsertBuffer
 {
@@ -266,16 +269,6 @@ TSCopyMultiInsertInfoIsFull(TSCopyMultiInsertInfo *miinfo)
 		miinfo->bufferedBytes >= MAX_BUFFERED_BYTES)
 		return true;
 
-	if (hash_get_num_entries(miinfo->multiInsertBuffers) >= ts_guc_max_open_chunks_per_insert)
-	{
-		/*
-		 * Flushing each multi-insert buffer will require looking up the
-		 * corresponding chunk insert state in the cache, so don't accumulate
-		 * more inserts than the cache can fit, to avoid thrashing.
-		 */
-		return true;
-	}
-
 	return false;
 }
 
@@ -320,9 +313,9 @@ TSCopyMultiInsertBufferFlush(TSCopyMultiInsertInfo *miinfo, TSCopyMultiInsertBuf
 	 * open and the pointers are valid.
 	 */
 	ChunkInsertState *cis = ts_chunk_dispatch_get_chunk_insert_state(miinfo->ccstate->dispatch,
-																	 buffer->point,
-																	 on_chunk_insert_state_changed,
-																	 buffer->bistate);
+																	 buffer->point, NULL, NULL);
+
+	// TODO: CHECK Callback
 
 	ResultRelInfo *resultRelInfo = cis->result_relation_info;
 
@@ -456,15 +449,17 @@ TSCopyMultiInsertBufferCleanup(TSCopyMultiInsertInfo *miinfo, TSCopyMultiInsertB
 }
 
 /*
- * Write out all stored tuples of all buffers to the chunks. Also,
- * cleanup the allocated buffers and free memory.
+ * Write out all stored tuples of all buffers to the chunks.
  */
 static inline void
-TSCopyMultiInsertInfoFlushAndCleanup(TSCopyMultiInsertInfo *miinfo)
+TSCopyMultiInsertInfoFlush(TSCopyMultiInsertInfo *miinfo, ChunkInsertState *cur_cis)
 {
 	HASH_SEQ_STATUS status;
 	MultiInsertBufferEntry *entry;
-
+	int current_multi_insert_buffers;
+	bool found;
+	
+	current_multi_insert_buffers = hash_get_num_entries(miinfo->multiInsertBuffers);
 	hash_seq_init(&status, miinfo->multiInsertBuffers);
 
 	for (entry = hash_seq_search(&status); entry != NULL; entry = hash_seq_search(&status))
@@ -473,21 +468,48 @@ TSCopyMultiInsertInfoFlushAndCleanup(TSCopyMultiInsertInfo *miinfo)
 		TSCopyMultiInsertBufferFlush(miinfo, buffer);
 
 		/*
-		 * Cleanup the buffer and finish the bulk insert. The chunk could
-		 * be closed (e.g., due to timescaledb.max_open_chunks_per_insert)
-		 * and the bulk insert must be finished first.
+		 * Reduce pending multi-insert buffers. However, the current used buffer
+		 * should not be deleted because it might reused for the next insert.
 		 */
+		if(current_multi_insert_buffers > MAX_PARTITION_BUFFERS)
+		{
+			if(entry->key != cur_cis->chunk_id) 
+			{
+				TSCopyMultiInsertBufferCleanup(miinfo, buffer);
+				hash_search(miinfo->multiInsertBuffers, &(entry->key), HASH_REMOVE, &found);
+				Assert(found);
+				current_multi_insert_buffers--;
+			}
+		}
+
+	}
+
+	miinfo->bufferedTuples = 0;
+	miinfo->bufferedBytes = 0;
+}
+
+/* 
+ * All existing buffers are flushed and the multi-insert states
+ * are freed. So, delete old hash map and create a new one for further
+ * inserts.
+ */
+static inline void
+TSCopyMultiInsertInfoFlushAndCleanup(TSCopyMultiInsertInfo *miinfo)
+{
+	TSCopyMultiInsertInfoFlush(miinfo, NULL);
+
+	HASH_SEQ_STATUS status;
+	MultiInsertBufferEntry *entry;
+
+	hash_seq_init(&status, miinfo->multiInsertBuffers);
+
+	for (entry = hash_seq_search(&status); entry != NULL; entry = hash_seq_search(&status))
+	{
+		TSCopyMultiInsertBuffer *buffer = entry->buffer;
 		TSCopyMultiInsertBufferCleanup(miinfo, buffer);
 	}
 
-	/* All existing buffers are flushed and the multi-insert states
-	 * are freed. So, delete old hash map and create a new one for further
-	 * inserts.
-	 */
 	hash_destroy(miinfo->multiInsertBuffers);
-	miinfo->multiInsertBuffers = TSCopyCreateNewInsertBufferHashMap();
-	miinfo->bufferedTuples = 0;
-	miinfo->bufferedBytes = 0;
 }
 
 /*
@@ -919,7 +941,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 			 * batching, so rows are visible to triggers etc.
 			 */
 			if (insertMethod == CIM_MULTI_CONDITIONAL)
-				TSCopyMultiInsertInfoFlushAndCleanup(&multiInsertInfo);
+				TSCopyMultiInsertInfoFlush(&multiInsertInfo, cis);
 
 			currentTupleInsertMethod = CIM_SINGLE;
 		}
@@ -1108,7 +1130,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 										multiInsertInfo.bufferedBytes,
 										multiInsertInfo.bufferedTuples)));
 
-						TSCopyMultiInsertInfoFlushAndCleanup(&multiInsertInfo);
+						TSCopyMultiInsertInfoFlush(&multiInsertInfo, cis);
 					}
 				}
 			}
@@ -1135,12 +1157,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 
 	/* Flush any remaining buffered tuples */
 	if (insertMethod != CIM_SINGLE)
-	{
-		if (!TSCopyMultiInsertInfoIsEmpty(&multiInsertInfo))
-			TSCopyMultiInsertInfoFlushAndCleanup(&multiInsertInfo);
-
-		hash_destroy(multiInsertInfo.multiInsertBuffers);
-	}
+		TSCopyMultiInsertInfoFlushAndCleanup(&multiInsertInfo);
 
 	/* Done, clean up */
 	if (errcallback.previous)
