@@ -674,6 +674,85 @@ push_down_group_bys(PlannerInfo *root, RelOptInfo *hyper_rel, Hyperspace *hs,
 	}
 }
 
+static bool check_rel_name(PlannerInfo *root, Node* node, char* name)
+{
+	if(! IsA(node, RangeTblRef)) 
+	{
+		return false;
+	}
+
+	int rtindex = (castNode(RangeTblRef, node))->rtindex;
+	RangeTblEntry *rte = planner_rt_fetch(rtindex, root);
+
+	if(rte->rtekind != RTE_RELATION)
+		return false;
+	
+	char* relname = get_rel_name(rte->relid);
+	
+	if (! strncmp(relname, name, NAMEDATALEN) == 0)
+		return false;
+
+	return true;
+}
+
+#define JOIN_DICT "metric_name"
+
+typedef struct JoinExpressionContext {
+	int hyper_tables;
+	int reference_tables;
+	int other_tables;
+	PlannerInfo *root;
+} JoinExpressionContext;
+
+static bool walk_join_tree(Node *node, void *context)
+{
+	if(node == NULL)
+		return false;
+
+	if(IsA(node, JoinExpr))
+	{
+		JoinExpr *join_expression = castNode(JoinExpr, node);
+		JoinExpressionContext *join_expression_context = (JoinExpressionContext*) context;
+		if(check_rel_name(join_expression_context->root, join_expression->larg, JOIN_DICT) || check_rel_name(join_expression_context->root, join_expression->rarg, JOIN_DICT))
+		{
+			join_expression_context->reference_tables++;
+		}
+	}
+
+	return expression_tree_walker(node, walk_join_tree, context);
+}
+
+static void
+push_down_reference_joins(PlannerInfo *root, Hypertable *ht,
+					DataNodeChunkAssignments *scas)
+{
+
+	Query *query = root->parse;
+
+	JoinExpressionContext expression_context = { 0, 0, 0, root };
+
+	query_tree_walker(query, walk_join_tree, &expression_context, 0);
+
+	/* Consider only joins with one table. */
+//	if (list_length(query->jointree->fromlist) != 1)
+//		return;
+
+	ListCell *lc;
+	foreach (lc, query->rtable)
+	{
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+		if(rte->rtekind == RTE_RELATION)
+		{
+			printf("Found relation");
+		}
+	}
+
+	if(expression_context.hyper_tables == 1 && expression_context.reference_tables == 1 && expression_context.other_tables == 0)
+		ereport(DEBUG1,
+			(errmsg("Using local dictionary join for join with dictionary \"%s\"", JOIN_DICT)));
+
+}
+
 /*
  * Turn chunk append paths into data node append paths.
  *
@@ -721,6 +800,9 @@ data_node_scan_add_node_paths(PlannerInfo *root, RelOptInfo *hyper_rel)
 
 	/* Try to push down GROUP BY expressions and bucketing, if possible */
 	push_down_group_bys(root, hyper_rel, ht->space, &scas);
+
+	/* Push down joins with a reference table */
+	push_down_reference_joins(root, ht, &scas);
 
 	/*
 	 * Create estimates and paths for each data node rel based on data node chunk

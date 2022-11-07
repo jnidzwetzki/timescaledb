@@ -78,6 +78,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     dist_copy_format_long.sql
     dist_copy_long.sql
     dist_ddl.sql
+    dist_join.sql
     dist_move_chunk.sql
     dist_partial_agg.sql
     dist_policy.sql
