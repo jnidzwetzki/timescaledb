@@ -43,6 +43,8 @@
 #include "fdw_utils.h"
 #include "relinfo.h"
 #include "scan_plan.h"
+#include "planner/planner.h"
+#include "chunk.h" 
 
 /*
  * DataNodeScan is a custom scan implementation for scanning hypertables on
@@ -674,6 +676,7 @@ push_down_group_bys(PlannerInfo *root, RelOptInfo *hyper_rel, Hyperspace *hs,
 	}
 }
 
+/*
 static bool check_rel_name(PlannerInfo *root, Node* node, char* name)
 {
 	if(! IsA(node, RangeTblRef)) 
@@ -693,63 +696,96 @@ static bool check_rel_name(PlannerInfo *root, Node* node, char* name)
 		return false;
 
 	return true;
-}
+}*/
 
 #define JOIN_DICT "metric_name"
 
 typedef struct JoinExpressionContext {
 	int hyper_tables;
 	int reference_tables;
+	int chunk_tables;
 	int other_tables;
-	PlannerInfo *root;
+	int inner_joins;
+	int other_joins;
 } JoinExpressionContext;
 
-static bool walk_join_tree(Node *node, void *context)
+static bool
+is_safe_to_pushdown_reftable_join(PlannerInfo *root, Hypertable *ht,
+					DataNodeChunkAssignments *scas)
 {
-	if(node == NULL)
-		return false;
+	Query *query = root->parse;
+	JoinExpressionContext expression_context = { 0 };
 
-	if(IsA(node, JoinExpr))
+	ListCell *lc;
+	List *seenRTEs = NIL;
+
+	foreach (lc, query->rtable)
 	{
-		JoinExpr *join_expression = castNode(JoinExpr, node);
-		JoinExpressionContext *join_expression_context = (JoinExpressionContext*) context;
-		if(check_rel_name(join_expression_context->root, join_expression->larg, JOIN_DICT) || check_rel_name(join_expression_context->root, join_expression->rarg, JOIN_DICT))
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+
+		if(rte->rtekind == RTE_RELATION)
 		{
-			join_expression_context->reference_tables++;
+
+			if(list_member_int(seenRTEs, rte->relid))
+			{
+				continue;
+			}
+			seenRTEs = lappend_int(seenRTEs, rte->relid);
+
+			char* relname = get_rel_name(rte->relid);
+			if (strncmp(relname, JOIN_DICT, NAMEDATALEN) == 0)
+			{
+				expression_context.reference_tables++;
+			}
+			else 
+			{
+				if (ts_is_hypertable(rte->relid))
+					expression_context.hyper_tables++;
+				else 
+					if (ts_chunk_get_hypertable_id_by_relid(rte->relid) != 0)
+						expression_context.chunk_tables++;
+					else 
+						expression_context.other_tables++;
+			}
+
+			if(rte->jointype == JOIN_INNER)
+				expression_context.inner_joins++;
+			else 
+				expression_context.other_joins++;
+
+			continue;
 		}
+
+		if(rte->rtekind == RTE_JOIN)
+			continue;
+
+		expression_context.other_tables++;	
 	}
 
-	return expression_tree_walker(node, walk_join_tree, context);
+	list_free(seenRTEs);
+
+	if(expression_context.hyper_tables != 1)
+		return false;
+
+	if(expression_context.reference_tables != 1)
+		return false;
+	
+	if(expression_context.other_tables != 0)
+		return false;
+		
+	if(expression_context.other_joins != 0)
+		return false;
+
+	return true;
 }
 
 static void
 push_down_reference_joins(PlannerInfo *root, Hypertable *ht,
 					DataNodeChunkAssignments *scas)
 {
-
-	Query *query = root->parse;
-
-	JoinExpressionContext expression_context = { 0, 0, 0, root };
-
-	query_tree_walker(query, walk_join_tree, &expression_context, 0);
-
-	/* Consider only joins with one table. */
-//	if (list_length(query->jointree->fromlist) != 1)
-//		return;
-
-	ListCell *lc;
-	foreach (lc, query->rtable)
-	{
-		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
-		if(rte->rtekind == RTE_RELATION)
-		{
-			printf("Found relation");
-		}
-	}
-
-	if(expression_context.hyper_tables == 1 && expression_context.reference_tables == 1 && expression_context.other_tables == 0)
+	if(is_safe_to_pushdown_reftable_join(root, ht, scas))
 		ereport(DEBUG1,
-			(errmsg("Using local dictionary join for join with dictionary \"%s\"", JOIN_DICT)));
+			(errmsg("Pushdown join with reference table")));
 
 }
 
