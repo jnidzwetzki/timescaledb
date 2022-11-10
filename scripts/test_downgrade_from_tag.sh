@@ -168,7 +168,7 @@ echo "Using temporary directory ${TEST_TMPDIR}"
 remove_containers || true
 
 # Build downgrade from image
-IMAGE_NAME=${DOWNGRADE_FROM_IMAGE} TAG_NAME=${DOWNGRADE_FROM_TAG} PG_VERSION=${PG_VERSION} bash ${SCRIPT_DIR}/docker-build.sh
+IMAGE_NAME=${DOWNGRADE_FROM_IMAGE} TAG_NAME=${DOWNGRADE_FROM_TAG} PG_VERSION=${PG_VERSION} GENERATE_DOWNGRADE_SCRIPT=ON bash ${SCRIPT_DIR}/docker-build.sh
 
 echo "Launching containers"
 docker_run ${CONTAINER_ORIG} ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
