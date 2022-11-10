@@ -211,6 +211,10 @@ for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
 
+echo "Copy files"
+echo $FILES
+ls -l ${TEST_TMPDIR}
+
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
 
