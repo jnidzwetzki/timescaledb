@@ -36,7 +36,7 @@ PID=$$
 # Container names. Append shell PID so that we can run this script in parallel
 CONTAINER_ORIG=timescaledb-orig-${PID}
 CONTAINER_CLEAN_RESTORE=timescaledb-clean-restore-${PID}
-CONTAINER_UPDATED=timescaledb-updated-${PID}
+CONTAINER_DOWNGRADED=timescaledb-updated-${PID}
 CONTAINER_CLEAN_RERUN=timescaledb-clean-rerun-${PID}
 
 export PG_VERSION
@@ -52,7 +52,7 @@ trap cleanup EXIT
 remove_containers() {
     docker rm -vf ${CONTAINER_ORIG} 2>/dev/null
     docker rm -vf ${CONTAINER_CLEAN_RESTORE} 2>/dev/null
-    docker rm -vf ${CONTAINER_UPDATED}  2>/dev/null
+    docker rm -vf ${CONTAINER_DOWNGRADED}  2>/dev/null
     docker rm -vf ${CONTAINER_CLEAN_RERUN} 2>/dev/null
     docker volume rm -f ${CLEAN_VOLUME} 2>/dev/null
     docker volume rm -f ${UPDATE_VOLUME} 2>/dev/null
@@ -118,16 +118,16 @@ docker_pgdiff_all() {
     local database=${2:-single}
     diff_file1=downgrade_test.restored.diff.${DOWNGRADE_FROM_TAG}
     diff_file2=downgrade_test.clean.diff.${DOWNGRADE_FROM_TAG}
-    docker_pgtest ${CONTAINER_UPDATED} $1 $database
+    docker_pgtest ${CONTAINER_DOWNGRADED} $1 $database
     docker_pgtest ${CONTAINER_CLEAN_RESTORE} $1 $database
     docker_pgtest ${CONTAINER_CLEAN_RERUN} $1 $database
-    echo "Diffing downgraded container vs restored. Downgraded: ${CONTAINER_UPDATED} restored: ${CONTAINER_CLEAN_RESTORE}"
-    diff -u ${TEST_TMPDIR}/${CONTAINER_UPDATED}.out ${TEST_TMPDIR}/${CONTAINER_CLEAN_RESTORE}.out | tee ${diff_file1}
+    echo "Diffing downgraded container vs restored. Downgraded: ${CONTAINER_DOWNGRADED} restored: ${CONTAINER_CLEAN_RESTORE}"
+    diff -u ${TEST_TMPDIR}/${CONTAINER_DOWNGRADED}.out ${TEST_TMPDIR}/${CONTAINER_CLEAN_RESTORE}.out | tee ${diff_file1}
     if [ ! -s ${diff_file1} ]; then
       rm ${diff_file1}
     fi
-    echo "Diffing downgraded container vs clean run. Downgraded: ${CONTAINER_UPDATED} clean run: ${CONTAINER_CLEAN_RERUN}"
-    diff -u ${TEST_TMPDIR}/${CONTAINER_UPDATED}.out ${TEST_TMPDIR}/${CONTAINER_CLEAN_RERUN}.out | tee ${diff_file2}
+    echo "Diffing downgraded container vs clean run. Downgraded: ${CONTAINER_DOWNGRADED} clean run: ${CONTAINER_CLEAN_RERUN}"
+    diff -u ${TEST_TMPDIR}/${CONTAINER_DOWNGRADED}.out ${TEST_TMPDIR}/${CONTAINER_CLEAN_RERUN}.out | tee ${diff_file2}
     if [ ! -s ${diff_file2} ]; then
       rm ${diff_file2}
     fi
@@ -211,45 +211,55 @@ for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
 
-# Inject current upgrade script
-if [ -f ${BASE_DIR}/sql/updates/${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql ]; then
-   echo "Upgrade file exists in repository"
-else
-   echo "Use current dev downgrade script"
-fi
-
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
 
 echo "Running downgraded container"
-docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}
+docker_run_vol ${CONTAINER_DOWNGRADED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}
 
-dstdir=$(docker exec ${CONTAINER_UPDATED} /bin/bash -c 'pg_config --pkglibdir')
+dstdir=$(docker exec ${CONTAINER_DOWNGRADED} /bin/bash -c 'pg_config --pkglibdir')
 for file in $FILES; do
-    docker cp "${TEST_TMPDIR}/$(basename $file)" "${CONTAINER_UPDATED}:$dstdir"
+    docker cp "${TEST_TMPDIR}/$(basename $file)" "${CONTAINER_DOWNGRADED}:$dstdir"
     rm "${TEST_TMPDIR}/$(basename $file)"
 done
 
-echo "==== 1. check caggs ===="
-docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
+# Inject current upgrade script
+ls -l ${BASE_DIR}/sql/updates/*.sql
 
-echo "Executing ALTER EXTENSION timescaledb UPDATE for update ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG)"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "single"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "dn1"
+dstdir=$(docker exec ${CONTAINER_DOWNGRADED} /bin/bash -c 'pg_config --sharedir')
+
+downgrade_file_name="${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql"
+downgrade_file_repository=${BASE_DIR}/sql/updates/${downgrade_file_name}
+downgrade_file_dev=${BASE_DIR}/sql/updates/reverse-dev.sql.sql
+
+if [ -f ${downgrade_file_repository} ]; then
+   echo "Upgrade file exists in repository"
+    docker cp "${downgrade_file_repository}" "${CONTAINER_DOWNGRADED}:$dstdir/extension/$downgrade_file_name"
+else
+   echo "Use current dev downgrade script"
+    docker cp "${downgrade_file_dev}" "${CONTAINER_DOWNGRADED}:$dstdir/extension/$downgrade_file_name"
+fi
+
+echo "==== 1. check caggs ===="
+docker_pgcmd ${CONTAINER_DOWNGRADED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
+
+echo "Executing ALTER EXTENSION timescaledb UPDATE for update ($DOWNGRADE_FROM -> $DOWNGRADE_TO)"
+docker_pgcmd ${CONTAINER_DOWNGRADED} "ALTER EXTENSION timescaledb UPDATE" "single"
+docker_pgcmd ${CONTAINER_DOWNGRADED} "ALTER EXTENSION timescaledb UPDATE" "dn1"
 
 echo "==== 2. check caggs ===="
-docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
+docker_pgcmd ${CONTAINER_DOWNGRADED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
 
 # We now assume for some reason the user wanted to downgrade, so we
 # downgrade the just upgraded version.
 echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($DOWNGRADE_FROM -> $DOWNGRADE_TO)"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "postgres"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "dn1"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "single"
+docker_pgcmd ${CONTAINER_DOWNGRADED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "postgres"
+docker_pgcmd ${CONTAINER_DOWNGRADED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "dn1"
+docker_pgcmd ${CONTAINER_DOWNGRADED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "single"
 
 # Check that there is nothing wrong before taking a backup
 echo "Checking that there are no missing dimension slices"
-docker_pgscript ${CONTAINER_UPDATED} /src/test/sql/updates/setup.check.sql
+docker_pgscript ${CONTAINER_DOWNGRADED} /src/test/sql/updates/setup.check.sql
 
 # Code below is similar to how it works for update scripts, but here
 # we run it on the downgraded version instead.
@@ -260,10 +270,10 @@ docker_pgscript ${CONTAINER_CLEAN_RERUN} /src/test/sql/updates/pre.testing.sql
 docker_pgscript ${CONTAINER_CLEAN_RERUN} /src/test/sql/updates/setup.${TEST_VERSION}.sql
 docker_pgscript ${CONTAINER_CLEAN_RERUN} /src/test/sql/updates/setup.post-downgrade.sql
 
-docker_exec ${CONTAINER_UPDATED} "pg_dump -h localhost -U postgres -Fc single > /tmp/single.dump"
-docker_exec ${CONTAINER_UPDATED} "pg_dump -h localhost -U postgres -Fc dn1 > /tmp/dn1.dump"
-docker cp ${CONTAINER_UPDATED}:/tmp/single.dump ${TEST_TMPDIR}/single.dump
-docker cp ${CONTAINER_UPDATED}:/tmp/dn1.dump ${TEST_TMPDIR}/dn1.dump
+docker_exec ${CONTAINER_DOWNGRADED} "pg_dump -h localhost -U postgres -Fc single > /tmp/single.dump"
+docker_exec ${CONTAINER_DOWNGRADED} "pg_dump -h localhost -U postgres -Fc dn1 > /tmp/dn1.dump"
+docker cp ${CONTAINER_DOWNGRADED}:/tmp/single.dump ${TEST_TMPDIR}/single.dump
+docker cp ${CONTAINER_DOWNGRADED}:/tmp/dn1.dump ${TEST_TMPDIR}/dn1.dump
 
 echo "Restoring database on clean version"
 docker cp ${TEST_TMPDIR}/single.dump ${CONTAINER_CLEAN_RESTORE}:/tmp/single.dump
