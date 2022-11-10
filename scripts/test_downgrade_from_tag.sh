@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+set -x
 set -e
 set -o pipefail
 
@@ -264,5 +265,5 @@ docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 SET timescaledb.rest
 docker_exec ${CONTAINER_CLEAN_RESTORE} "pg_restore -h localhost -U postgres -d dn1 /tmp/dn1.dump"
 docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 RESET timescaledb.restoring"
 
-echo "Comparing downgraded ($UPDATE_FROM_TAG -> $UPDATE_FROM_TAG) with clean install ($UPDATE_FROM_TAG)"
+echo "Comparing downgraded ($UPDATE_FROM_TAG -> $UPDATE_TO_TAG) with clean install"
 docker_pgdiff_all /src/test/sql/updates/post.${TEST_VERSION}.sql "single"
