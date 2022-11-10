@@ -226,6 +226,7 @@ done
 
 echo "Content"
 docker_exec ${CONTAINER_DOWNGRADED} "ls -l $dstdir"
+docker_exec ${CONTAINER_DOWNGRADED} "ldd $dstdir/timescaledb-2.9.0-dev.so"
 
 # Inject the downgrrade script. When a downgrade script for the version
 # already exist in the repository, take this one. Otherwise, use the current
