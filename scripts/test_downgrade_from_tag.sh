@@ -209,7 +209,6 @@ echo "Downgrade version is ${DOWNGRADE_FROM}"
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
 FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so")
 
-docker_exec ${CONTAINER_ORIG} "ldd $srcdir/timescaledb-2.9.0-dev.so"
 for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
@@ -227,9 +226,9 @@ for file in $FILES; do
     rm "${TEST_TMPDIR}/$(basename $file)"
 done
 
-echo "Content"
+docker restart ${CONTAINER_DOWNGRADED}
+wait_for_pg ${CONTAINER_DOWNGRADED}
 docker_exec ${CONTAINER_DOWNGRADED} "ls -l $dstdir"
-docker_exec ${CONTAINER_DOWNGRADED} "ldd $dstdir/timescaledb-2.9.0-dev.so"
 
 # Inject the downgrrade script. When a downgrade script for the version
 # already exist in the repository, take this one. Otherwise, use the current
