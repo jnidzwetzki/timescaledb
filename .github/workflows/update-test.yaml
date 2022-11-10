@@ -70,8 +70,7 @@ jobs:
       env:
         TEST_VERSION: v7
       run: |
-        export DOWNGRADE_FROM=$(grep '^version = ' version.config | sed -e 's!^[^=]\+ = !!')
-        export DOWNGRADE_TO=$(grep '^downgrade_to_version = ' version.config | sed -e 's!^[^=]\+ = !!')
+        DOWNGRADE_TO=$(grep '^downgrade_to_version = ' version.config | sed -e 's!^[^=]\+ = !!')
         PG_MAJOR=$(echo "${{ matrix.pg }}" | sed -e 's![.].*!!')
         DOWNGRADE_TO_TAG=${DOWNGRADE_TO}-pg${PG_MAJOR}
         export DOWNGRADE_TO_TAG

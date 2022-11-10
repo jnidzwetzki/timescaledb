@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-set -x
 set -e
 set -o pipefail
 
@@ -13,17 +12,20 @@ UPDATE_PG_PORT=${UPDATE_PG_PORT:-6432}
 CLEAN_PG_PORT=${CLEAN_PG_PORT:-6433}
 PG_VERSION=${PG_VERSION:-14.3}
 GIT_ID=$(git -C ${BASE_DIR} describe --dirty --always | sed -e "s|/|_|g")
-DOWNGRADE_FROM=${DOWNGRADE_FROM:-2.8.1}
 DOWNGRADE_FROM_IMAGE=${DOWNGRADE_FROM_IMAGE:-downgrade_test}
 DOWNGRADE_FROM_TAG=${DOWNGRADE_FROM_TAG:-${GIT_ID}}
-DOWNGRADE_TO=${DOWNGRADE_TO:-2.8.0}
 DOWNGRADE_TO_IMAGE=${DOWNGRADE_TO_IMAGE:-timescale/timescaledb}
 DOWNGRADE_TO_TAG=${DOWNGRADE_TO_TAG:-0.1.0}
 DO_CLEANUP=${DO_CLEANUP:-true}
 PGOPTS="-v TEST_VERSION=${TEST_VERSION} -v TEST_REPAIR=${TEST_REPAIR} -v WITH_SUPERUSER=${WITH_SUPERUSER} -v WITH_ROLES=true -v WITH_CHUNK=true"
 GENERATE_DOWNGRADE_SCRIPT=${GENERATE_DOWNGRADE_SCRIPT:-ON}
 
-echo "Performing downgrade tests (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG}) / (${DOWNGRADE_FROM} -> ${DOWNGRADE_TO})"
+
+echo "Performing downgrade tests (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG})"
+
+# shellcheck disable=SC2001 # SC2001 -- See if you can use ${variable//search/replace} instead.
+DOWNGRADE_TO=$(echo ${DOWNGRADE_TO_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
+echo "Testing from version ${DOWNGRADE_TO} (test version ${TEST_VERSION})"
 
 # The following variables are exported to called scripts.
 export GENERATE_DOWNGRADE_SCRIPT PG_VERSION
@@ -162,7 +164,7 @@ wait_for_pg() {
     exit 1
 }
 
-echo "Testing from version ${DOWNGRADE_FROM} (test version ${TEST_VERSION})"
+echo "Testing from version ${DOWNGRADE_FROM_TAG} (test version ${TEST_VERSION})"
 echo "Using temporary directory ${TEST_TMPDIR}"
 
 remove_containers || true
@@ -191,11 +193,17 @@ docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/pre.testing.sql
 docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/setup.${TEST_VERSION}.sql
 docker_pgcmd ${CONTAINER_ORIG} "CHECKPOINT;"
 
+# Determine version installed in container
+sharedir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --sharedir')
+version=$(docker_exec ${CONTAINER_ORIG} "grep default_version $sharedir/extension/timescaledb.control")
+
+DOWNGRADE_FROM=$(echo $version | cut -d "'" -f 2)
+echo "Downgrade version is ${DOWNGRADE_FROM}"
+
 # We need the current version shared libraries as well, so we copy
 # all shared libraries out from the original container before stopping
 # it. We could limit it to just the preceeding version, but this is
 # more straightforward.
-mkdir ${TEST_TMPDIR}/pkglibdir
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
 FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so")
 
@@ -204,7 +212,7 @@ for file in $FILES; do
 done
 
 # Inject current upgrade script
-docker_exec ${CONTAINER_ORIG} "ls -l /src/sql/updates/"
+docker_exec ${CONTAINER_ORIG} "ls -l /src/sql/updates"
 
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
