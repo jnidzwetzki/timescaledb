@@ -220,10 +220,6 @@ docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM 
 echo "Executing ALTER EXTENSION timescaledb UPDATE for update ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG)"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "single"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "dn1"
-# Need to update also postgres DB since add_data_node may connect to
-# it and it will be borked if we don't upgrade to an extension binary
-# which is available in the image.
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "postgres"
 
 echo "==== 2. check caggs ===="
 docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
