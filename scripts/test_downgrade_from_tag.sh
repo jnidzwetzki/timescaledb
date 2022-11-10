@@ -21,7 +21,9 @@ PGOPTS="-v TEST_VERSION=${TEST_VERSION} -v TEST_REPAIR=${TEST_REPAIR} -v WITH_SU
 GENERATE_DOWNGRADE_SCRIPT=${GENERATE_DOWNGRADE_SCRIPT:-ON}
 
 
-echo "Performing downgrade tests (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG})"
+echo "Performing downgrade tests (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG}) on ${PG_VERSION}"
+echo "Downgrade from image is ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}"
+echo "Downgrade to image is ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}"
 
 # shellcheck disable=SC2001 # SC2001 -- See if you can use ${variable//search/replace} instead.
 DOWNGRADE_TO=$(echo ${DOWNGRADE_TO_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
@@ -207,6 +209,7 @@ echo "Downgrade version is ${DOWNGRADE_FROM}"
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
 FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so")
 
+docker_exec ${CONTAINER_DOWNGRADED} "ldd $srcdir/timescaledb-2.9.0-dev.so"
 for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
