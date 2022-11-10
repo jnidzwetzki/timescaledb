@@ -160,7 +160,7 @@ wait_for_pg() {
 }
 
 # shellcheck disable=SC2001 # SC2001 -- See if you can use ${variable//search/replace} instead.
-VERSION=$(echo ${DOWNGRADE_FROM_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
+VERSION=$(echo ${DOWNGRADE_TO_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
 echo "Testing from version ${VERSION} (test version ${TEST_VERSION})"
 echo "Using temporary directory ${TEST_TMPDIR}"
 
@@ -226,7 +226,7 @@ docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM 
 
 # We now assume for some reason the user wanted to downgrade, so we
 # downgrade the just upgraded version.
-echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($DOWNGRADE_TO_TAG -> $DOWNGRADE_FROM_TAG)"
+echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($DOWNGRADE_TO_TAG -> $DOWNGRADE_FROM_TAG) $VERSION"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "postgres"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "dn1"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "single"
