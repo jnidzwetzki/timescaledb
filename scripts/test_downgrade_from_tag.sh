@@ -211,21 +211,21 @@ for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
 
-echo "Copy files"
-echo $FILES
-ls -l ${TEST_TMPDIR}
-
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
 
 echo "Running downgraded container"
 docker_run_vol ${CONTAINER_DOWNGRADED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}
 
+set -x
 dstdir=$(docker exec ${CONTAINER_DOWNGRADED} /bin/bash -c 'pg_config --pkglibdir')
 for file in $FILES; do
     docker cp "${TEST_TMPDIR}/$(basename $file)" "${CONTAINER_DOWNGRADED}:$dstdir"
     rm "${TEST_TMPDIR}/$(basename $file)"
 done
+
+echo "Content"
+docker_exec ${CONTAINER_DOWNGRADED} "ls -l $dstdir"
 
 # Inject the downgrrade script. When a downgrade script for the version
 # already exist in the repository, take this one. Otherwise, use the current
