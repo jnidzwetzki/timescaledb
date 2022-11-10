@@ -196,7 +196,7 @@ docker_pgcmd ${CONTAINER_ORIG} "CHECKPOINT;"
 # more straightforward.
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
 sharedir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --sharedir')
-FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so $sharedir/extension/timescaledb--$version.sql")
+FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so $sharedir/extension/timescaledb--*$VERSION.sql")
 
 echo "Copy files from orig container: ${FILES}"
 
@@ -267,5 +267,5 @@ docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 SET timescaledb.rest
 docker_exec ${CONTAINER_CLEAN_RESTORE} "pg_restore -h localhost -U postgres -d dn1 /tmp/dn1.dump"
 docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 RESET timescaledb.restoring"
 
-echo "Comparing downgraded ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG) with clean install"
+echo "Comparing downgraded (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG}) with clean install ${VERSION}"
 docker_pgdiff_all /src/test/sql/updates/post.${TEST_VERSION}.sql "single"
