@@ -223,10 +223,10 @@ for file in $FILES; do
     rm "${TEST_TMPDIR}/$(basename $file)"
 done
 
-# Inject the needed upgrade script. When a upgrade script for the version
+# Inject the downgrrade script. When a downgrade script for the version
 # already exist in the repository, take this one. Otherwise, use the current
 # development reverse file. The generated downgrade script from the build is
-# not used, because it regenerates all objects.  
+# not used, because it regenerates all objects from scatch.
 downgrade_file_name=${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql
 downgrade_file_repository=${BASE_DIR}/sql/updates/${downgrade_file_name}
 downgrade_file_dev=${BASE_DIR}/sql/updates/reverse-dev.sql
@@ -251,6 +251,10 @@ docker_pgcmd ${CONTAINER_DOWNGRADED} "ALTER EXTENSION timescaledb UPDATE" "dn1"
 
 echo "==== 2. check caggs ===="
 docker_pgcmd ${CONTAINER_DOWNGRADED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
+
+# Restart container to be able to downgrade TimescaleDB
+docker restart ${CONTAINER_DOWNGRADED}
+wait_for_pg ${CONTAINER_DOWNGRADED}
 
 # We now assume for some reason the user wanted to downgrade, so we
 # downgrade the just upgraded version.
