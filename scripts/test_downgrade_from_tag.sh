@@ -223,21 +223,23 @@ for file in $FILES; do
     rm "${TEST_TMPDIR}/$(basename $file)"
 done
 
-# Inject current upgrade script
-ls -l ${BASE_DIR}/sql/updates/*.sql
-
-dstdir=$(docker exec ${CONTAINER_DOWNGRADED} /bin/bash -c 'pg_config --sharedir')
-
+# Inject the needed upgrade script. When a upgrade script for the version
+# already exist in the repository, take this one. Otherwise, use the current
+# development reverse file. The generated downgrade script from the build is
+# not used, because it regenerates all objects.  
 downgrade_file_name=${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql
 downgrade_file_repository=${BASE_DIR}/sql/updates/${downgrade_file_name}
 downgrade_file_dev=${BASE_DIR}/sql/updates/reverse-dev.sql
 
+dstdir=$(docker exec ${CONTAINER_DOWNGRADED} /bin/bash -c 'pg_config --sharedir')
+destfile=${dstdir}/extension/timescaledb--${downgrade_file_name}
+
 if [ -f ${downgrade_file_repository} ]; then
-   echo "Upgrade file exists in repository"
-    docker cp "${downgrade_file_repository}" "${CONTAINER_DOWNGRADED}:$dstdir/extension/$downgrade_file_name"
+   echo "Upgrade file exists in repository, use this file for testing"
+   docker cp "${downgrade_file_repository}" "${CONTAINER_DOWNGRADED}:${destfile}"
 else
-   echo "Use current dev downgrade script"
-    docker cp "${downgrade_file_dev}" "${CONTAINER_DOWNGRADED}:$dstdir/extension/$downgrade_file_name"
+   echo "Use current dev reverse script for test"
+   docker cp "${downgrade_file_dev}" "${CONTAINER_DOWNGRADED}:${destfile}"
 fi
 
 echo "==== 1. check caggs ===="
