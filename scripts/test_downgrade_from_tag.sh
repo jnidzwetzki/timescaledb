@@ -15,7 +15,6 @@ PG_VERSION=${PG_VERSION:-14.3}
 GIT_ID=$(git -C ${BASE_DIR} describe --dirty --always | sed -e "s|/|_|g")
 DOWNGRADE_FROM_IMAGE=${DOWNGRADE_FROM_IMAGE:-downgrade_test}
 DOWNGRADE_FROM_TAG=${DOWNGRADE_FROM_TAG:-${GIT_ID}}
-DOWNGRADE_TO_IMAGE=${DOWNGRADE_TO_IMAGE:-timescale/timescaledb}
 DOWNGRADE_TO_TAG=${DOWNGRADE_TO_TAG:-0.1.0}
 DO_CLEANUP=${DO_CLEANUP:-true}
 PGOPTS="-v TEST_VERSION=${TEST_VERSION} -v TEST_REPAIR=${TEST_REPAIR} -v WITH_SUPERUSER=${WITH_SUPERUSER} -v WITH_ROLES=true -v WITH_CHUNK=true"
@@ -167,8 +166,8 @@ echo "Using temporary directory ${TEST_TMPDIR}"
 
 remove_containers || true
 
-# Build downgrade from image
-IMAGE_NAME=${DOWNGRADE_FROM_IMAGE} TAG_NAME=${DOWNGRADE_FROM_TAG} PG_VERSION=${PG_VERSION} GENERATE_DOWNGRADE_SCRIPT=ON bash ${SCRIPT_DIR}/docker-build.sh
+# Build downgrade image
+IMAGE_NAME=${DOWNGRADE_FROM_IMAGE} TAG_NAME=${DOWNGRADE_FROM_TAG} PG_VERSION=${PG_VERSION} bash ${SCRIPT_DIR}/docker-build.sh
 
 echo "Launching containers"
 docker_run ${CONTAINER_ORIG} ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
@@ -204,8 +203,10 @@ done
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
 
-echo "Running downgraded container"
-docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}
+echo "Running container for downgrade"
+# The downgrade script for the current version is only available in
+# our downgrade image. So, use that image to perform the downgrade.
+docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
 
 dstdir=$(docker exec ${CONTAINER_UPDATED} /bin/bash -c 'pg_config --pkglibdir')
 for file in $FILES; do
