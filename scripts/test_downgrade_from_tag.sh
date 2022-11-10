@@ -195,7 +195,11 @@ docker_pgcmd ${CONTAINER_ORIG} "CHECKPOINT;"
 # it. We could limit it to just the preceeding version, but this is
 # more straightforward.
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
-FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so")
+sharedir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --sharedir')
+FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so $sharedir/extension/timescaledb--$version.sql")
+
+echo "Copy files from orig container: ${FILES}"
+
 for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
@@ -203,10 +207,8 @@ done
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
 
-echo "Running container for downgrade"
-# The downgrade script for the current version is only available in
-# our downgrade image. So, use that image to perform the downgrade.
-docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
+echo "Running downgraded container"
+docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}
 
 dstdir=$(docker exec ${CONTAINER_UPDATED} /bin/bash -c 'pg_config --pkglibdir')
 for file in $FILES; do
