@@ -228,9 +228,9 @@ ls -l ${BASE_DIR}/sql/updates/*.sql
 
 dstdir=$(docker exec ${CONTAINER_DOWNGRADED} /bin/bash -c 'pg_config --sharedir')
 
-downgrade_file_name="${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql"
+downgrade_file_name=${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql
 downgrade_file_repository=${BASE_DIR}/sql/updates/${downgrade_file_name}
-downgrade_file_dev=${BASE_DIR}/sql/updates/reverse-dev.sql.sql
+downgrade_file_dev=${BASE_DIR}/sql/updates/reverse-dev.sql
 
 if [ -f ${downgrade_file_repository} ]; then
    echo "Upgrade file exists in repository"
