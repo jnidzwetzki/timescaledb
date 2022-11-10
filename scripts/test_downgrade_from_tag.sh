@@ -212,7 +212,11 @@ for file in $FILES; do
 done
 
 # Inject current upgrade script
-docker_exec ${CONTAINER_ORIG} "ls -l /src/sql/updates"
+if [ -f ${BASE_DIR}/sql/updates/${DOWNGRADE_FROM}--${DOWNGRADE_TO}.sql ]; then
+   echo "Upgrade file exists in repository"
+else
+   echo "Use current dev downgrade script"
+fi
 
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
