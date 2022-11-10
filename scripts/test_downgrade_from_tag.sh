@@ -209,7 +209,7 @@ echo "Downgrade version is ${DOWNGRADE_FROM}"
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
 FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so")
 
-docker_exec ${CONTAINER_DOWNGRADED} "ldd $srcdir/timescaledb-2.9.0-dev.so"
+docker_exec ${CONTAINER_ORIG} "ldd $srcdir/timescaledb-2.9.0-dev.so"
 for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
