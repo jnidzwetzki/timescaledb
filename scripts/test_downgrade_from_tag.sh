@@ -13,15 +13,17 @@ UPDATE_PG_PORT=${UPDATE_PG_PORT:-6432}
 CLEAN_PG_PORT=${CLEAN_PG_PORT:-6433}
 PG_VERSION=${PG_VERSION:-14.3}
 GIT_ID=$(git -C ${BASE_DIR} describe --dirty --always | sed -e "s|/|_|g")
+DOWNGRADE_FROM=${DOWNGRADE_FROM:-2.8.1}
 DOWNGRADE_FROM_IMAGE=${DOWNGRADE_FROM_IMAGE:-downgrade_test}
 DOWNGRADE_FROM_TAG=${DOWNGRADE_FROM_TAG:-${GIT_ID}}
+DOWNGRADE_TO=${DOWNGRADE_TO:-2.8.0}
 DOWNGRADE_TO_IMAGE=${DOWNGRADE_TO_IMAGE:-timescale/timescaledb}
 DOWNGRADE_TO_TAG=${DOWNGRADE_TO_TAG:-0.1.0}
 DO_CLEANUP=${DO_CLEANUP:-true}
 PGOPTS="-v TEST_VERSION=${TEST_VERSION} -v TEST_REPAIR=${TEST_REPAIR} -v WITH_SUPERUSER=${WITH_SUPERUSER} -v WITH_ROLES=true -v WITH_CHUNK=true"
 GENERATE_DOWNGRADE_SCRIPT=${GENERATE_DOWNGRADE_SCRIPT:-ON}
 
-echo "Performing downgrade tests ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG)"
+echo "Performing downgrade tests (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG}) / (${DOWNGRADE_FROM} -> ${DOWNGRADE_TO})"
 
 # The following variables are exported to called scripts.
 export GENERATE_DOWNGRADE_SCRIPT PG_VERSION
@@ -160,9 +162,7 @@ wait_for_pg() {
     exit 1
 }
 
-# shellcheck disable=SC2001 # SC2001 -- See if you can use ${variable//search/replace} instead.
-VERSION=$(echo ${DOWNGRADE_TO_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
-echo "Testing from version ${VERSION} (test version ${TEST_VERSION})"
+echo "Testing from version ${DOWNGRADE_FROM} (test version ${TEST_VERSION})"
 echo "Using temporary directory ${TEST_TMPDIR}"
 
 remove_containers || true
@@ -191,19 +191,20 @@ docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/pre.testing.sql
 docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/setup.${TEST_VERSION}.sql
 docker_pgcmd ${CONTAINER_ORIG} "CHECKPOINT;"
 
-# We need the previous version shared libraries as well, so we copy
+# We need the current version shared libraries as well, so we copy
 # all shared libraries out from the original container before stopping
 # it. We could limit it to just the preceeding version, but this is
 # more straightforward.
+mkdir ${TEST_TMPDIR}/pkglibdir
 srcdir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --pkglibdir')
-sharedir=$(docker exec ${CONTAINER_ORIG} /bin/bash -c 'pg_config --sharedir')
-FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so $sharedir/extension/timescaledb--*$VERSION.sql")
-
-echo "Copy files from orig container: ${FILES}"
+FILES=$(docker exec ${CONTAINER_ORIG} /bin/bash -c "ls $srcdir/timescaledb*.so")
 
 for file in $FILES; do
     docker cp "${CONTAINER_ORIG}:$file" "${TEST_TMPDIR}/$(basename $file)"
 done
+
+# Inject current upgrade script
+docker_exec ${CONTAINER_ORIG} "ls -l /src/sql/updates/"
 
 # Remove container but keep volume
 docker rm -f ${CONTAINER_ORIG}
@@ -229,10 +230,10 @@ docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM 
 
 # We now assume for some reason the user wanted to downgrade, so we
 # downgrade the just upgraded version.
-echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($DOWNGRADE_TO_TAG -> $DOWNGRADE_FROM_TAG) $VERSION"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "postgres"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "dn1"
-docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "single"
+echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($DOWNGRADE_FROM -> $DOWNGRADE_TO)"
+docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "postgres"
+docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "dn1"
+docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$DOWNGRADE_TO'" "single"
 
 # Check that there is nothing wrong before taking a backup
 echo "Checking that there are no missing dimension slices"
@@ -268,5 +269,5 @@ docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 SET timescaledb.rest
 docker_exec ${CONTAINER_CLEAN_RESTORE} "pg_restore -h localhost -U postgres -d dn1 /tmp/dn1.dump"
 docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 RESET timescaledb.restoring"
 
-echo "Comparing downgraded (${DOWNGRADE_FROM_TAG} -> ${DOWNGRADE_TO_TAG}) with clean install ${VERSION}"
+echo "Comparing downgraded (${DOWNGRADE_FROM} -> ${DOWNGRADE_TO}) with clean install"
 docker_pgdiff_all /src/test/sql/updates/post.${TEST_VERSION}.sql "single"
