@@ -13,13 +13,15 @@ UPDATE_PG_PORT=${UPDATE_PG_PORT:-6432}
 CLEAN_PG_PORT=${CLEAN_PG_PORT:-6433}
 PG_VERSION=${PG_VERSION:-14.3}
 GIT_ID=$(git -C ${BASE_DIR} describe --dirty --always | sed -e "s|/|_|g")
-UPDATE_FROM_IMAGE=${UPDATE_FROM_IMAGE:-timescale/timescaledb}
-UPDATE_FROM_TAG=${UPDATE_FROM_TAG:-0.1.0}
-UPDATE_TO_IMAGE=${UPDATE_TO_IMAGE:-downgrade_test}
-UPDATE_TO_TAG=${UPDATE_TO_TAG:-${GIT_ID}}
+DOWNGRADE_FROM_IMAGE=${DOWNGRADE_FROM_IMAGE:-timescale/timescaledb}
+DOWNGRADE_FROM_TAG=${DOWNGRADE_FROM_TAG:-${GIT_ID}}
+DOWNGRADE_TO_IMAGE=${DOWNGRADE_TO_IMAGE:-downgrade_test}
+DOWNGRADE_TO_TAG=${DOWNGRADE_TO_TAG:-0.1.0}
 DO_CLEANUP=${DO_CLEANUP:-true}
 PGOPTS="-v TEST_VERSION=${TEST_VERSION} -v TEST_REPAIR=${TEST_REPAIR} -v WITH_SUPERUSER=${WITH_SUPERUSER} -v WITH_ROLES=true -v WITH_CHUNK=true"
 GENERATE_DOWNGRADE_SCRIPT=${GENERATE_DOWNGRADE_SCRIPT:-ON}
+
+echo "Performing downgrade tests ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG)"
 
 # The following variables are exported to called scripts.
 export GENERATE_DOWNGRADE_SCRIPT PG_VERSION
@@ -110,8 +112,8 @@ docker_pgtest() {
 
 docker_pgdiff_all() {
     local database=${2:-single}
-    diff_file1=downgrade_test.restored.diff.${UPDATE_FROM_TAG}
-    diff_file2=downgrade_test.clean.diff.${UPDATE_FROM_TAG}
+    diff_file1=downgrade_test.restored.diff.${DOWNGRADE_FROM_TAG}
+    diff_file2=downgrade_test.clean.diff.${DOWNGRADE_FROM_TAG}
     docker_pgtest ${CONTAINER_UPDATED} $1 $database
     docker_pgtest ${CONTAINER_CLEAN_RESTORE} $1 $database
     docker_pgtest ${CONTAINER_CLEAN_RERUN} $1 $database
@@ -159,18 +161,18 @@ wait_for_pg() {
 }
 
 # shellcheck disable=SC2001 # SC2001 -- See if you can use ${variable//search/replace} instead.
-VERSION=$(echo ${UPDATE_FROM_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
+VERSION=$(echo ${DOWNGRADE_FROM_TAG} | sed 's/\([0-9]\{0,\}\.[0-9]\{0,\}\.[0-9]\{0,\}\).*/\1/g')
 echo "Testing from version ${VERSION} (test version ${TEST_VERSION})"
 echo "Using temporary directory ${TEST_TMPDIR}"
 
 remove_containers || true
 
-IMAGE_NAME=${UPDATE_TO_IMAGE} TAG_NAME=${UPDATE_TO_TAG} PG_VERSION=${PG_VERSION} bash ${SCRIPT_DIR}/docker-build.sh
+IMAGE_NAME=${DOWNGRADE_TO_IMAGE} TAG_NAME=${DOWNGRADE_TO_TAG} PG_VERSION=${PG_VERSION} bash ${SCRIPT_DIR}/docker-build.sh
 
 echo "Launching containers"
-docker_run ${CONTAINER_ORIG} ${UPDATE_FROM_IMAGE}:${UPDATE_FROM_TAG}
-docker_run ${CONTAINER_CLEAN_RESTORE} ${UPDATE_FROM_IMAGE}:${UPDATE_FROM_TAG}
-docker_run ${CONTAINER_CLEAN_RERUN} ${UPDATE_FROM_IMAGE}:${UPDATE_FROM_TAG}
+docker_run ${CONTAINER_ORIG} ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
+docker_run ${CONTAINER_CLEAN_RESTORE} ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
+docker_run ${CONTAINER_CLEAN_RERUN} ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}
 
 # Create roles for test. Roles must be created outside of regular
 # setup scripts; they must be added separately to each instance since
@@ -182,7 +184,7 @@ docker_pgscript ${CONTAINER_CLEAN_RERUN} /src/test/sql/updates/setup.roles.sql "
 CLEAN_VOLUME=$(docker inspect ${CONTAINER_CLEAN_RESTORE} --format='{{range .Mounts }}{{.Name}}{{end}}')
 UPDATE_VOLUME=$(docker inspect ${CONTAINER_ORIG} --format='{{range .Mounts }}{{.Name}}{{end}}')
 
-echo "Executing setup script on container running ${UPDATE_FROM_IMAGE}:${UPDATE_FROM_TAG}"
+echo "Executing setup script on container running ${DOWNGRADE_FROM_IMAGE}:${DOWNGRADE_FROM_TAG}"
 docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/setup.databases.sql "postgres"
 docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/pre.testing.sql
 docker_pgscript ${CONTAINER_ORIG} /src/test/sql/updates/setup.${TEST_VERSION}.sql
@@ -202,7 +204,7 @@ done
 docker rm -f ${CONTAINER_ORIG}
 
 echo "Running downgraded container"
-docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${UPDATE_TO_IMAGE}:${UPDATE_TO_TAG}
+docker_run_vol ${CONTAINER_UPDATED} ${UPDATE_VOLUME}:/var/lib/postgresql/data ${DOWNGRADE_TO_IMAGE}:${DOWNGRADE_TO_TAG}
 
 dstdir=$(docker exec ${CONTAINER_UPDATED} /bin/bash -c 'pg_config --pkglibdir')
 for file in $FILES; do
@@ -213,7 +215,7 @@ done
 echo "==== 1. check caggs ===="
 docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM _timescaledb_catalog.continuous_agg"
 
-echo "Executing ALTER EXTENSION timescaledb UPDATE for update ($UPDATE_FROM_TAG -> $UPDATE_TO_TAG)"
+echo "Executing ALTER EXTENSION timescaledb UPDATE for update ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG)"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "single"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE" "dn1"
 # Need to update also postgres DB since add_data_node may connect to
@@ -226,7 +228,7 @@ docker_pgcmd ${CONTAINER_UPDATED} "SELECT user_view_schema, user_view_name FROM 
 
 # We now assume for some reason the user wanted to downgrade, so we
 # downgrade the just upgraded version.
-echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($UPDATE_TO_TAG -> $UPDATE_FROM_TAG)"
+echo "Executing ALTER EXTENSION timescaledb UPDATE for downgrade ($DOWNGRADE_TO_TAG -> $DOWNGRADE_FROM_TAG)"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "postgres"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "dn1"
 docker_pgcmd ${CONTAINER_UPDATED} "ALTER EXTENSION timescaledb UPDATE TO '$VERSION'" "single"
@@ -265,5 +267,5 @@ docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 SET timescaledb.rest
 docker_exec ${CONTAINER_CLEAN_RESTORE} "pg_restore -h localhost -U postgres -d dn1 /tmp/dn1.dump"
 docker_pgcmd ${CONTAINER_CLEAN_RESTORE} "ALTER DATABASE dn1 RESET timescaledb.restoring"
 
-echo "Comparing downgraded ($UPDATE_FROM_TAG -> $UPDATE_TO_TAG) with clean install"
+echo "Comparing downgraded ($DOWNGRADE_FROM_TAG -> $DOWNGRADE_TO_TAG) with clean install"
 docker_pgdiff_all /src/test/sql/updates/post.${TEST_VERSION}.sql "single"

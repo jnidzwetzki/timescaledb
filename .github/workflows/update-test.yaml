@@ -72,8 +72,8 @@ jobs:
       run: |
         DOWNGRADE_TO=$(grep '^downgrade_to_version = ' version.config | sed -e 's!^[^=]\+ = !!')
         PG_MAJOR=$(echo "${{ matrix.pg }}" | sed -e 's![.].*!!')
-        UPDATE_FROM_TAG=${DOWNGRADE_TO}-pg${PG_MAJOR}
-        export UPDATE_FROM_TAG
+        DOWNGRADE_TO_TAG=${DOWNGRADE_TO}-pg${PG_MAJOR}
+        export DOWNGRADE_TO_TAG
         scripts/test_downgrade_from_tag.sh
 
     - name: Downgrade diff
