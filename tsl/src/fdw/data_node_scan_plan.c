@@ -676,30 +676,6 @@ push_down_group_bys(PlannerInfo *root, RelOptInfo *hyper_rel, Hyperspace *hs,
 	}
 }
 
-/*
-static bool check_rel_name(PlannerInfo *root, Node* node, char* name)
-{
-	if(! IsA(node, RangeTblRef)) 
-	{
-		return false;
-	}
-
-	int rtindex = (castNode(RangeTblRef, node))->rtindex;
-	RangeTblEntry *rte = planner_rt_fetch(rtindex, root);
-
-	if(rte->rtekind != RTE_RELATION)
-		return false;
-	
-	char* relname = get_rel_name(rte->relid);
-	
-	if (! strncmp(relname, name, NAMEDATALEN) == 0)
-		return false;
-
-	return true;
-}*/
-
-#define JOIN_DICT "metric_name"
-
 typedef struct JoinExpressionContext {
 	int hyper_tables;
 	int reference_tables;
@@ -710,8 +686,7 @@ typedef struct JoinExpressionContext {
 } JoinExpressionContext;
 
 static bool
-is_safe_to_pushdown_reftable_join(PlannerInfo *root, Hypertable *ht,
-					DataNodeChunkAssignments *scas)
+is_safe_to_pushdown_reftable_join(PlannerInfo *root, TsFdwRelInfo *fpinfo)
 {
 	Query *query = root->parse;
 	JoinExpressionContext expression_context = { 0 };
@@ -732,8 +707,7 @@ is_safe_to_pushdown_reftable_join(PlannerInfo *root, Hypertable *ht,
 			}
 			seenRTEs = lappend_int(seenRTEs, rte->relid);
 
-			char* relname = get_rel_name(rte->relid);
-			if (strncmp(relname, JOIN_DICT, NAMEDATALEN) == 0)
+			if(list_member_oid(fpinfo->join_reference_tables, rte->relid))
 			{
 				expression_context.reference_tables++;
 			}
@@ -780,10 +754,9 @@ is_safe_to_pushdown_reftable_join(PlannerInfo *root, Hypertable *ht,
 }
 
 static void
-push_down_reference_joins(PlannerInfo *root, Hypertable *ht,
-					DataNodeChunkAssignments *scas)
+push_down_reference_joins(PlannerInfo *root, TsFdwRelInfo *fpinfo)
 {
-	if(is_safe_to_pushdown_reftable_join(root, ht, scas))
+	if(is_safe_to_pushdown_reftable_join(root, fpinfo))
 		ereport(DEBUG1,
 			(errmsg("Pushdown join with reference table")));
 
@@ -837,9 +810,6 @@ data_node_scan_add_node_paths(PlannerInfo *root, RelOptInfo *hyper_rel)
 	/* Try to push down GROUP BY expressions and bucketing, if possible */
 	push_down_group_bys(root, hyper_rel, ht->space, &scas);
 
-	/* Push down joins with a reference table */
-	push_down_reference_joins(root, ht, &scas);
-
 	/*
 	 * Create estimates and paths for each data node rel based on data node chunk
 	 * assignments.
@@ -868,6 +838,12 @@ data_node_scan_add_node_paths(PlannerInfo *root, RelOptInfo *hyper_rel)
 									TS_FDW_RELINFO_HYPERTABLE_DATA_NODE);
 
 		fpinfo->sca = sca;
+
+		/* Push down joins with a reference table (fpinfo needs to be constructed) */
+		if(i == 0)
+		{
+			push_down_reference_joins(root, fpinfo);
+		}
 
 		if (!bms_is_empty(sca->chunk_relids))
 		{

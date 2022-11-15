@@ -147,6 +147,8 @@ typedef struct TsFdwRelInfo
 
 	/* Cached chunk data for the chunk relinfo. */
 	struct Chunk *chunk;
+
+	List *join_reference_tables; /* OIDs of join reference tables */
 } TsFdwRelInfo;
 
 extern TsFdwRelInfo *fdw_relinfo_create(PlannerInfo *root, RelOptInfo *rel, Oid server_oid,
