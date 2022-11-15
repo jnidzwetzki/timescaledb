@@ -1,0 +1,254 @@
+-- This file and its contents are licensed under the Timescale License.
+-- Please see the included NOTICE for copyright information and
+-- LICENSE-TIMESCALE for a copy of the license.
+\c :TEST_DBNAME :ROLE_CLUSTER_SUPERUSER
+\set ECHO all
+\set DATA_NODE_1 :TEST_DBNAME _1
+\set DATA_NODE_2 :TEST_DBNAME _2
+\set DATA_NODE_3 :TEST_DBNAME _3
+-- Add data nodes
+SELECT node_name, database, node_created, database_created, extension_created
+FROM (
+  SELECT (add_data_node(name, host => 'localhost', DATABASE => name)).*
+  FROM (VALUES (:'DATA_NODE_1'), (:'DATA_NODE_2'), (:'DATA_NODE_3')) v(name)
+) a;
+   node_name    |    database    | node_created | database_created | extension_created 
+----------------+----------------+--------------+------------------+-------------------
+ db_dist_join_1 | db_dist_join_1 | t            | t                | t
+ db_dist_join_2 | db_dist_join_2 | t            | t                | t
+ db_dist_join_3 | db_dist_join_3 | t            | t                | t
+(3 rows)
+
+GRANT USAGE ON FOREIGN SERVER :DATA_NODE_1, :DATA_NODE_2, :DATA_NODE_3 TO PUBLIC;
+\des
+                  List of foreign servers
+      Name      |       Owner        | Foreign-data wrapper 
+----------------+--------------------+----------------------
+ db_dist_join_1 | cluster_super_user | timescaledb_fdw
+ db_dist_join_2 | cluster_super_user | timescaledb_fdw
+ db_dist_join_3 | cluster_super_user | timescaledb_fdw
+(3 rows)
+
+drop table if exists metric;
+NOTICE:  table "metric" does not exist, skipping
+create table metric(ts timestamptz, id int, value float);
+select create_distributed_hypertable('metric', 'ts', 'id');
+NOTICE:  adding not-null constraint to column "ts"
+ create_distributed_hypertable 
+-------------------------------
+ (1,public,metric,t)
+(1 row)
+
+insert into metric values ('2022-02-02 02:02:02+03', 1, '50');
+-- The reference table
+create table metric_name(id int primary key, name text);
+insert into metric_name values (1, 'cpu1');
+CALL distributed_exec($$create table metric_name(id int primary key, name text);$$);
+CALL distributed_exec($$insert into metric_name values (1, 'cpu1');$$);
+create table metric_name_local(id int primary key, name text);
+insert into metric_name_local values (1, 'cpu1');
+create table dummy_table(id int primary key, name text);
+CALL distributed_exec($$create table dummy_table(id int primary key, name text);$$);
+create table dummy_table_local(id int primary key, name text);
+SET client_min_messages TO WARNING;
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (ADD join_reference_tables 'metric_name, dummy_table');
+\set ON_ERROR_STOP 0
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET join_reference_tables 'metric_name, dummy_table, non_existing_table');
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET join_reference_tables 'metric_name, dummy_table, metric');
+ERROR:  table "metric" is a hypertable. Only plain tables are supported as join reference
+\set ON_ERROR_STOP 1
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET join_reference_tables 'metric_name, dummy_table');
+SET client_min_messages TO DEBUG1;
+explain (verbose, analyze, costs off, timing off, summary off)
+select name, value from metric 
+left join metric_name using (id)
+where name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03';
+LOG:  statement: explain (verbose, analyze, costs off, timing off, summary off)
+select name, value from metric 
+left join metric_name using (id)
+where name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03';
+DEBUG:  Pushdown join with reference table
+                                                                                                                         QUERY PLAN                                                                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Hash Join (actual rows=1 loops=1)
+   Output: metric_name.name, metric.value
+   Inner Unique: true
+   Hash Cond: (metric.id = metric_name.id)
+   ->  Custom Scan (DataNodeScan) on public.metric (actual rows=1 loops=1)
+         Output: metric.value, metric.id
+         Data node: db_dist_join_1
+         Fetcher Type: COPY
+         Chunks: _dist_hyper_1_1_chunk
+         Remote SQL: SELECT id, value FROM public.metric WHERE _timescaledb_internal.chunks_in(public.metric.*, ARRAY[1]) AND ((ts >= '2022-02-01 15:02:02-08'::timestamp with time zone)) AND ((ts <= '2022-02-01 15:12:02-08'::timestamp with time zone))
+   ->  Hash (actual rows=1 loops=1)
+         Output: metric_name.name, metric_name.id
+         Buckets: 1024  Batches: 1 
+         ->  Seq Scan on public.metric_name (actual rows=1 loops=1)
+               Output: metric_name.name, metric_name.id
+               Filter: (metric_name.name ~~ 'cpu%'::text)
+(16 rows)
+
+-- Join with reference table
+explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric 
+left join metric_name using (id)
+where name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+LOG:  statement: explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric 
+left join metric_name using (id)
+where name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+DEBUG:  Pushdown join with reference table
+                                                                                                                               QUERY PLAN                                                                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate (actual rows=1 loops=1)
+   Output: metric_name.name, max(metric.value)
+   Group Key: metric_name.name
+   ->  Sort (actual rows=1 loops=1)
+         Output: metric_name.name, metric.value
+         Sort Key: metric_name.name
+         Sort Method: quicksort 
+         ->  Hash Join (actual rows=1 loops=1)
+               Output: metric_name.name, metric.value
+               Inner Unique: true
+               Hash Cond: (metric.id = metric_name.id)
+               ->  Custom Scan (DataNodeScan) on public.metric (actual rows=1 loops=1)
+                     Output: metric.value, metric.id
+                     Data node: db_dist_join_1
+                     Fetcher Type: COPY
+                     Chunks: _dist_hyper_1_1_chunk
+                     Remote SQL: SELECT id, value FROM public.metric WHERE _timescaledb_internal.chunks_in(public.metric.*, ARRAY[1]) AND ((ts >= '2022-02-01 15:02:02-08'::timestamp with time zone)) AND ((ts <= '2022-02-01 15:12:02-08'::timestamp with time zone))
+               ->  Hash (actual rows=1 loops=1)
+                     Output: metric_name.name, metric_name.id
+                     Buckets: 1024  Batches: 1 
+                     ->  Seq Scan on public.metric_name (actual rows=1 loops=1)
+                           Output: metric_name.name, metric_name.id
+                           Filter: (metric_name.name ~~ 'cpu%'::text)
+(23 rows)
+
+-- Join with reference table
+explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric, metric_name
+where metric.id = metric_name.id
+and name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+LOG:  statement: explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric, metric_name
+where metric.id = metric_name.id
+and name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+DEBUG:  Pushdown join with reference table
+                                                                                                                               QUERY PLAN                                                                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate (actual rows=1 loops=1)
+   Output: metric_name.name, max(metric.value)
+   Group Key: metric_name.name
+   ->  Sort (actual rows=1 loops=1)
+         Output: metric_name.name, metric.value
+         Sort Key: metric_name.name
+         Sort Method: quicksort 
+         ->  Hash Join (actual rows=1 loops=1)
+               Output: metric_name.name, metric.value
+               Inner Unique: true
+               Hash Cond: (metric.id = metric_name.id)
+               ->  Custom Scan (DataNodeScan) on public.metric (actual rows=1 loops=1)
+                     Output: metric.value, metric.id
+                     Data node: db_dist_join_1
+                     Fetcher Type: COPY
+                     Chunks: _dist_hyper_1_1_chunk
+                     Remote SQL: SELECT id, value FROM public.metric WHERE _timescaledb_internal.chunks_in(public.metric.*, ARRAY[1]) AND ((ts >= '2022-02-01 15:02:02-08'::timestamp with time zone)) AND ((ts <= '2022-02-01 15:12:02-08'::timestamp with time zone))
+               ->  Hash (actual rows=1 loops=1)
+                     Output: metric_name.name, metric_name.id
+                     Buckets: 1024  Batches: 1 
+                     ->  Seq Scan on public.metric_name (actual rows=1 loops=1)
+                           Output: metric_name.name, metric_name.id
+                           Filter: (metric_name.name ~~ 'cpu%'::text)
+(23 rows)
+
+-- Join with local table
+explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric 
+left join metric_name_local using (id)
+where name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+LOG:  statement: explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric 
+left join metric_name_local using (id)
+where name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+                                                                                                                               QUERY PLAN                                                                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate (actual rows=1 loops=1)
+   Output: metric_name_local.name, max(metric.value)
+   Group Key: metric_name_local.name
+   ->  Sort (actual rows=1 loops=1)
+         Output: metric_name_local.name, metric.value
+         Sort Key: metric_name_local.name
+         Sort Method: quicksort 
+         ->  Hash Join (actual rows=1 loops=1)
+               Output: metric_name_local.name, metric.value
+               Inner Unique: true
+               Hash Cond: (metric.id = metric_name_local.id)
+               ->  Custom Scan (DataNodeScan) on public.metric (actual rows=1 loops=1)
+                     Output: metric.value, metric.id
+                     Data node: db_dist_join_1
+                     Fetcher Type: COPY
+                     Chunks: _dist_hyper_1_1_chunk
+                     Remote SQL: SELECT id, value FROM public.metric WHERE _timescaledb_internal.chunks_in(public.metric.*, ARRAY[1]) AND ((ts >= '2022-02-01 15:02:02-08'::timestamp with time zone)) AND ((ts <= '2022-02-01 15:12:02-08'::timestamp with time zone))
+               ->  Hash (actual rows=1 loops=1)
+                     Output: metric_name_local.name, metric_name_local.id
+                     Buckets: 1024  Batches: 1 
+                     ->  Seq Scan on public.metric_name_local (actual rows=1 loops=1)
+                           Output: metric_name_local.name, metric_name_local.id
+                           Filter: (metric_name_local.name ~~ 'cpu%'::text)
+(23 rows)
+
+-- Join with local table
+explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric, metric_name_local
+where metric.id = metric_name_local.id
+and name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+LOG:  statement: explain (verbose, analyze, costs off, timing off, summary off)
+select name, max(value) from metric, metric_name_local
+where metric.id = metric_name_local.id
+and name like 'cpu%'
+and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
+group by name;
+                                                                                                                               QUERY PLAN                                                                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate (actual rows=1 loops=1)
+   Output: metric_name_local.name, max(metric.value)
+   Group Key: metric_name_local.name
+   ->  Sort (actual rows=1 loops=1)
+         Output: metric_name_local.name, metric.value
+         Sort Key: metric_name_local.name
+         Sort Method: quicksort 
+         ->  Hash Join (actual rows=1 loops=1)
+               Output: metric_name_local.name, metric.value
+               Inner Unique: true
+               Hash Cond: (metric.id = metric_name_local.id)
+               ->  Custom Scan (DataNodeScan) on public.metric (actual rows=1 loops=1)
+                     Output: metric.value, metric.id
+                     Data node: db_dist_join_1
+                     Fetcher Type: COPY
+                     Chunks: _dist_hyper_1_1_chunk
+                     Remote SQL: SELECT id, value FROM public.metric WHERE _timescaledb_internal.chunks_in(public.metric.*, ARRAY[1]) AND ((ts >= '2022-02-01 15:02:02-08'::timestamp with time zone)) AND ((ts <= '2022-02-01 15:12:02-08'::timestamp with time zone))
+               ->  Hash (actual rows=1 loops=1)
+                     Output: metric_name_local.name, metric_name_local.id
+                     Buckets: 1024  Batches: 1 
+                     ->  Seq Scan on public.metric_name_local (actual rows=1 loops=1)
+                           Output: metric_name_local.name, metric_name_local.id
+                           Filter: (metric_name_local.name ~~ 'cpu%'::text)
+(23 rows)
+

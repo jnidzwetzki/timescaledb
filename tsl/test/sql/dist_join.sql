@@ -41,19 +41,27 @@ CALL distributed_exec($$create table dummy_table(id int primary key, name text);
 
 create table dummy_table_local(id int primary key, name text);
 
+SET client_min_messages TO WARNING;
 
--- ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET reference_tables 'metric_name, dummy_table');
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (ADD join_reference_tables 'metric_name, dummy_table');
+
+\set ON_ERROR_STOP 0
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET join_reference_tables 'metric_name, dummy_table, non_existing_table');
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET join_reference_tables 'metric_name, dummy_table, metric');
+\set ON_ERROR_STOP 1
+
+ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (SET join_reference_tables 'metric_name, dummy_table');
 
 SET client_min_messages TO DEBUG1;
 
-explain (verbose, analyze)
+explain (verbose, analyze, costs off, timing off, summary off)
 select name, value from metric 
 left join metric_name using (id)
 where name like 'cpu%'
 and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03';
 
 -- Join with reference table
-explain (verbose, analyze)
+explain (verbose, analyze, costs off, timing off, summary off)
 select name, max(value) from metric 
 left join metric_name using (id)
 where name like 'cpu%'
@@ -61,7 +69,7 @@ and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
 group by name;
 
 -- Join with reference table
-explain (verbose, analyze)
+explain (verbose, analyze, costs off, timing off, summary off)
 select name, max(value) from metric, metric_name
 where metric.id = metric_name.id
 and name like 'cpu%'
@@ -69,7 +77,7 @@ and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
 group by name;
 
 -- Join with local table
-explain (verbose, analyze)
+explain (verbose, analyze, costs off, timing off, summary off)
 select name, max(value) from metric 
 left join metric_name_local using (id)
 where name like 'cpu%'
@@ -77,7 +85,7 @@ and ts between '2022-02-02 02:02:02+03' and '2022-02-02 02:12:02+03'
 group by name;
 
 -- Join with local table
-explain (verbose, analyze)
+explain (verbose, analyze, costs off, timing off, summary off)
 select name, max(value) from metric, metric_name_local
 where metric.id = metric_name_local.id
 and name like 'cpu%'
