@@ -43,8 +43,9 @@
 #include "fdw_utils.h"
 #include "relinfo.h"
 #include "scan_plan.h"
+#include "estimate.h"
 #include "planner/planner.h"
-#include "chunk.h" 
+#include "chunk.h"
 
 /*
  * DataNodeScan is a custom scan implementation for scanning hypertables on
@@ -676,20 +677,25 @@ push_down_group_bys(PlannerInfo *root, RelOptInfo *hyper_rel, Hyperspace *hs,
 	}
 }
 
-typedef struct JoinExpressionContext {
+typedef struct JoinExpressionStats
+{
 	int hyper_tables;
 	int reference_tables;
 	int chunk_tables;
 	int other_tables;
 	int inner_joins;
 	int other_joins;
-} JoinExpressionContext;
+} JoinExpressionStats;
 
 static bool
 is_safe_to_pushdown_reftable_join(PlannerInfo *root, TsFdwRelInfo *fpinfo)
 {
 	Query *query = root->parse;
-	JoinExpressionContext expression_context = { 0 };
+	JoinExpressionStats expression_stats = { 0 };
+
+	/* Currently only SELCTS are supported */
+	if (query->commandType != CMD_SELECT)
+		return false;
 
 	ListCell *lc;
 	List *seenRTEs = NIL;
@@ -698,68 +704,158 @@ is_safe_to_pushdown_reftable_join(PlannerInfo *root, TsFdwRelInfo *fpinfo)
 	{
 		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
 
-		if(rte->rtekind == RTE_RELATION)
+		if (rte->rtekind == RTE_RELATION)
 		{
-
-			if(list_member_int(seenRTEs, rte->relid))
+			if (list_member_int(seenRTEs, rte->relid))
 			{
 				continue;
 			}
 			seenRTEs = lappend_int(seenRTEs, rte->relid);
 
-			if(list_member_oid(fpinfo->join_reference_tables, rte->relid))
+			if (list_member_oid(fpinfo->join_reference_tables, rte->relid))
 			{
-				expression_context.reference_tables++;
+				expression_stats.reference_tables++;
 			}
-			else 
+			else
 			{
 				if (ts_is_hypertable(rte->relid))
-					expression_context.hyper_tables++;
-				else 
-					if (ts_chunk_get_hypertable_id_by_relid(rte->relid) != 0)
-						expression_context.chunk_tables++;
-					else 
-						expression_context.other_tables++;
+					expression_stats.hyper_tables++;
+				else if (ts_chunk_get_hypertable_id_by_relid(rte->relid) != 0)
+					expression_stats.chunk_tables++;
+				else
+					expression_stats.other_tables++;
 			}
 
-			if(rte->jointype == JOIN_INNER)
-				expression_context.inner_joins++;
-			else 
-				expression_context.other_joins++;
+			if (rte->jointype == JOIN_INNER)
+				expression_stats.inner_joins++;
+			else
+				expression_stats.other_joins++;
 
 			continue;
 		}
 
-		if(rte->rtekind == RTE_JOIN)
+		if (rte->rtekind == RTE_JOIN)
 			continue;
 
-		expression_context.other_tables++;	
+		expression_stats.other_tables++;
 	}
 
 	list_free(seenRTEs);
 
-	if(expression_context.hyper_tables != 1)
+	if (expression_stats.hyper_tables != 1)
 		return false;
 
-	if(expression_context.reference_tables != 1)
+	if (expression_stats.reference_tables != 1)
 		return false;
-	
-	if(expression_context.other_tables != 0)
+
+	if (expression_stats.other_tables != 0)
 		return false;
-		
-	if(expression_context.other_joins != 0)
+
+	if (expression_stats.other_joins != 0)
 		return false;
 
 	return true;
 }
 
-static void
-push_down_reference_joins(PlannerInfo *root, TsFdwRelInfo *fpinfo)
-{
-	if(is_safe_to_pushdown_reftable_join(root, fpinfo))
-		ereport(DEBUG1,
-			(errmsg("Pushdown join with reference table")));
 
+void
+generate_pushdown_join_paths(PlannerInfo *root,
+							RelOptInfo *joinrel,
+							RelOptInfo *outerrel,
+							RelOptInfo *innerrel,
+							JoinType jointype,
+							JoinPathExtraData *extra)
+{
+	TsFdwRelInfo *fpinfo;
+	ForeignPath *joinpath;
+	double rows;
+	int width;
+	Cost startup_cost;
+	Cost total_cost;
+	Path *epq_path = NULL;
+
+	/*/
+	 * Skip if this join combination has been considered already.
+	 */
+	if (joinrel->fdw_private)
+		return;
+
+	fpinfo = fdw_relinfo_alloc_or_get(joinrel); // TODO: Fixme (replace with datanodes)
+
+	/*
+	 * This code does not work for joins with lateral references, since those
+	 * must have parameterized paths, which we don't generate yet.
+	 */
+	if (!bms_is_empty(joinrel->lateral_relids))
+		return;
+
+	if (!is_safe_to_pushdown_reftable_join(root, fpinfo))
+		return;
+
+	ereport(DEBUG1, (errmsg("Pushdown join with reference table")));
+
+	/*
+	 * Compute the selectivity and cost of the local_conds, so we don't have
+	 * to do it over again for each path. The best we can do for these
+	 * conditions is to estimate selectivity on the basis of local statistics.
+	 * The local conditions are applied after the join has been computed on
+	 * the remote side like quals in WHERE clause, so pass jointype as
+	 * JOIN_INNER.
+	 */
+	fpinfo->local_conds_sel = clauselist_selectivity(root,
+													 fpinfo->local_conds,
+													 0,
+													 JOIN_INNER,
+													 NULL);
+	cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
+
+	/*
+	 * If we are going to estimate costs locally, estimate the join clause
+	 * selectivity here while we have special join info.
+	 */
+	fpinfo->joinclause_sel = clauselist_selectivity(root,
+													fpinfo->joinclauses,
+													0,
+													fpinfo->jointype,
+													extra->sjinfo);
+
+	/* Estimate costs for bare join relation */
+	fdw_estimate_path_cost_size(root, joinrel, NIL, &rows, &width, &startup_cost, &total_cost);
+
+	/* Now update this information in the joinrel */
+	joinrel->rows = rows;
+	joinrel->reltarget->width = width;
+	fpinfo->rows = rows;
+	fpinfo->width = width;
+	fpinfo->startup_cost = startup_cost;
+	fpinfo->total_cost = total_cost;
+
+	/*
+	 * Create a new join path and add it to the joinrel which represents a
+	 * join between foreign tables.
+	 */
+	joinpath = create_foreign_join_path(root,
+										joinrel,
+										NULL, /* default pathtarget */
+										rows,
+										startup_cost,
+										total_cost,
+										NIL, /* no pathkeys */
+										joinrel->lateral_relids,
+										epq_path,
+										NIL); /* no fdw_private */
+
+	/* Add generated path into joinrel by add_path(). */
+	add_path(joinrel, (Path *) joinpath);
+
+	/* Consider pathkeys for the join relation */
+	fdw_add_paths_with_pathkeys_for_rel(root,
+										joinrel,
+										epq_path,
+										data_node_scan_path_create); // TODO: Is the last parameter
+																	 // correct?
+
+	/* XXX Consider parameterized paths for the join relation */
 }
 
 /*
@@ -838,12 +934,6 @@ data_node_scan_add_node_paths(PlannerInfo *root, RelOptInfo *hyper_rel)
 									TS_FDW_RELINFO_HYPERTABLE_DATA_NODE);
 
 		fpinfo->sca = sca;
-
-		/* Push down joins with a reference table (fpinfo needs to be constructed) */
-		if(i == 0)
-		{
-			push_down_reference_joins(root, fpinfo);
-		}
 
 		if (!bms_is_empty(sca->chunk_relids))
 		{
