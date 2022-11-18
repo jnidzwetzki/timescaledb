@@ -372,6 +372,21 @@ get_foreign_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 #endif
 }
 
+/*
+ * get_foreign_join_paths
+ *		Add possible ForeignPath to joinrel, if join is safe to push down.
+ */
+void
+ts_get_foreign_join_paths(PlannerInfo *root,
+							RelOptInfo *joinrel,
+							RelOptInfo *outerrel,
+							RelOptInfo *innerrel,
+							JoinType jointype,
+							JoinPathExtraData *extra)
+{
+	data_node_generate_pushdown_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
+}
+
 static FdwRoutine timescaledb_fdw_routine = {
 	.type = T_FdwRoutine,
 	/* scan (mandatory) */
@@ -395,6 +410,8 @@ static FdwRoutine timescaledb_fdw_routine = {
 	/* explain/analyze */
 	.ExplainForeignScan = explain_foreign_scan,
 	.ExplainForeignModify = explain_foreign_modify,
+	/* Support functions for join push-down */
+	.GetForeignJoinPaths = ts_get_foreign_join_paths,
 	.AnalyzeForeignTable = NULL,
 };
 
@@ -414,3 +431,4 @@ timescaledb_fdw_validator(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VOID();
 }
+

@@ -759,7 +759,7 @@ is_safe_to_pushdown_reftable_join(PlannerInfo *root, TsFdwRelInfo *fpinfo)
 
 
 void
-generate_pushdown_join_paths(PlannerInfo *root,
+data_node_generate_pushdown_join_paths(PlannerInfo *root,
 							RelOptInfo *joinrel,
 							RelOptInfo *outerrel,
 							RelOptInfo *innerrel,
