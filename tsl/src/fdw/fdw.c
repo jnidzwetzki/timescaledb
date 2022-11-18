@@ -380,6 +380,10 @@ void
 ts_get_foreign_join_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
 						  RelOptInfo *innerrel, JoinType jointype, JoinPathExtraData *extra)
 {
+	// Ensure we are interested
+	if (outerrel->fdw_private == NULL)
+		return;
+
 	data_node_generate_pushdown_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 }
 

@@ -762,21 +762,63 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 									   RelOptInfo *innerrel, JoinType jointype,
 									   JoinPathExtraData *extra)
 {
-	TsFdwRelInfo *fpinfo;
 	ForeignPath *joinpath;
 	double rows;
 	int width;
 	Cost startup_cost;
 	Cost total_cost;
 	Path *epq_path = NULL;
+	RelOptInfo **data_node_rels;
+	int ndata_node_rels;
+	DataNodeChunkAssignments scas;
 
-	/*/
+	/*
 	 * Skip if this join combination has been considered already.
 	 */
 	if (joinrel->fdw_private)
 		return;
 
-	fpinfo = fdw_relinfo_alloc_or_get(joinrel); // TODO: Fixme (replace with datanodes)
+	/* Left table has to be distibuted */
+	Assert(outerrel->fdw_private != NULL);
+
+	RelOptInfo *hyperrel = root->simple_rel_array[1]; // TODO: Fixme
+	RangeTblEntry *hyper_rte = root->simple_rte_array[1];
+
+	for (int rti = 0; rti < root->simple_rel_array_size; rti++)
+	{
+		RangeTblEntry *rte = root->simple_rte_array[rti];
+		RelOptInfo *rel = root->simple_rel_array[rti];
+
+		if (joinrel->fdw_private)
+			return;
+
+		Assert(rte || true);
+		Assert(rel || true);
+	}
+
+	int nchunk_rels = hyperrel->nparts;
+	RelOptInfo **chunk_rels = hyperrel->part_rels;
+	// RangeTblEntry *hyper_rte = planner_rt_fetch(hyperrel->relid, root);
+	Cache *hcache = ts_hypertable_cache_pin();
+	Hypertable *ht = ts_hypertable_cache_get_entry(hcache, hyper_rte->relid, CACHE_FLAG_NONE);
+
+	Assert(NULL != ht);
+
+	if (nchunk_rels <= 0)
+	{
+		ts_cache_release(hcache);
+		return;
+	}
+
+	/* Create the RelOptInfo for each data node */
+	data_node_rels = build_data_node_part_rels(root, hyperrel, &ndata_node_rels);
+
+	Assert(ndata_node_rels > 0);
+
+	data_node_chunk_assignments_init(&scas, SCA_STRATEGY_ATTACHED_DATA_NODE, root, ndata_node_rels);
+
+	/* Assign chunks to data nodes */
+	data_node_chunk_assignment_assign_chunks(&scas, chunk_rels, nchunk_rels);
 
 	/*
 	 * This code does not work for joins with lateral references, since those
@@ -785,65 +827,97 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 	if (!bms_is_empty(joinrel->lateral_relids))
 		return;
 
-	if (!is_safe_to_pushdown_reftable_join(root, fpinfo))
-		return;
-
-	ereport(DEBUG1, (errmsg("Pushdown join with reference table")));
-
 	/*
-	 * Compute the selectivity and cost of the local_conds, so we don't have
-	 * to do it over again for each path. The best we can do for these
-	 * conditions is to estimate selectivity on the basis of local statistics.
-	 * The local conditions are applied after the join has been computed on
-	 * the remote side like quals in WHERE clause, so pass jointype as
-	 * JOIN_INNER.
+	 * Create estimates and paths for each data node rel based on data node chunk
+	 * assignments.
 	 */
-	fpinfo->local_conds_sel =
-		clauselist_selectivity(root, fpinfo->local_conds, 0, JOIN_INNER, NULL);
-	cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
+	for (int i = 0; i < ndata_node_rels; i++)
+	{
+		RelOptInfo *data_node_rel = data_node_rels[i];
+		DataNodeChunkAssignment *sca =
+			data_node_chunk_assignment_get_or_create(&scas, data_node_rel);
+		TsFdwRelInfo *fpinfo;
 
-	/*
-	 * If we are going to estimate costs locally, estimate the join clause
-	 * selectivity here while we have special join info.
-	 */
-	fpinfo->joinclause_sel =
-		clauselist_selectivity(root, fpinfo->joinclauses, 0, fpinfo->jointype, extra->sjinfo);
+		/*
+		 * Basic stats for data node rels come from the assigned chunks since
+		 * data node rels don't correspond to real tables in the system.
+		 */
+		data_node_rel->pages = sca->pages;
+		data_node_rel->tuples = sca->tuples;
+		data_node_rel->rows = sca->rows;
+		/* The width should be the same as any chunk */
+		data_node_rel->reltarget->width = hyperrel->part_rels[0]->reltarget->width;
 
-	/* Estimate costs for bare join relation */
-	fdw_estimate_path_cost_size(root, joinrel, NIL, &rows, &width, &startup_cost, &total_cost);
+		fpinfo = fdw_relinfo_create(root,
+									data_node_rel,
+									data_node_rel->serverid,
+									hyper_rte->relid,
+									TS_FDW_RELINFO_HYPERTABLE_DATA_NODE);
 
-	/* Now update this information in the joinrel */
-	joinrel->rows = rows;
-	joinrel->reltarget->width = width;
-	fpinfo->rows = rows;
-	fpinfo->width = width;
-	fpinfo->startup_cost = startup_cost;
-	fpinfo->total_cost = total_cost;
+		fpinfo->sca = sca;
 
-	/*
-	 * Create a new join path and add it to the joinrel which represents a
-	 * join between foreign tables.
-	 */
-	joinpath = create_foreign_join_path(root,
-										joinrel,
-										NULL, /* default pathtarget */
-										rows,
-										startup_cost,
-										total_cost,
-										NIL, /* no pathkeys */
-										joinrel->lateral_relids,
-										epq_path,
-										NIL); /* no fdw_private */
+		if (!is_safe_to_pushdown_reftable_join(root, fpinfo))
+			break;
 
-	/* Add generated path into joinrel by add_path(). */
-	add_path(joinrel, (Path *) joinpath);
+		ereport(DEBUG1, (errmsg("Pushdown join with reference table")));
 
-	/* Consider pathkeys for the join relation */
-	fdw_add_paths_with_pathkeys_for_rel(root,
-										joinrel,
-										epq_path,
-										data_node_scan_path_create); // TODO: Is the last parameter
-																	 // correct?
+		/*
+		 * Compute the selectivity and cost of the local_conds, so we don't have
+		 * to do it over again for each path. The best we can do for these
+		 * conditions is to estimate selectivity on the basis of local statistics.
+		 * The local conditions are applied after the join has been computed on
+		 * the remote side like quals in WHERE clause, so pass jointype as
+		 * JOIN_INNER.
+		 */
+		fpinfo->local_conds_sel =
+			clauselist_selectivity(root, fpinfo->local_conds, 0, JOIN_INNER, NULL);
+		cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
+
+		/*
+		 * If we are going to estimate costs locally, estimate the join clause
+		 * selectivity here while we have special join info.
+		 */
+		fpinfo->joinclause_sel =
+			clauselist_selectivity(root, fpinfo->joinclauses, 0, fpinfo->jointype, extra->sjinfo);
+
+		/* Estimate costs for bare join relation */
+		fdw_estimate_path_cost_size(root, joinrel, NIL, &rows, &width, &startup_cost, &total_cost);
+
+		/* Now update this information in the joinrel */
+		joinrel->rows = rows;
+		joinrel->reltarget->width = width;
+		fpinfo->rows = rows;
+		fpinfo->width = width;
+		fpinfo->startup_cost = startup_cost;
+		fpinfo->total_cost = total_cost;
+
+		/*
+		 * Create a new join path and add it to the joinrel which represents a
+		 * join between foreign tables.
+		 */
+		joinpath = create_foreign_join_path(root,
+											joinrel,
+											NULL, /* default pathtarget */
+											rows,
+											startup_cost,
+											total_cost,
+											NIL, /* no pathkeys */
+											joinrel->lateral_relids,
+											epq_path,
+											NIL); /* no fdw_private */
+
+		/* Add generated path into joinrel by add_path(). */
+		add_path(joinrel, (Path *) joinpath);
+
+		/* Consider pathkeys for the join relation */
+		fdw_add_paths_with_pathkeys_for_rel(root,
+											joinrel,
+											epq_path,
+											data_node_scan_path_create); // TODO: Is the last
+																		 // parameter correct?
+	}
+
+	ts_cache_release(hcache);
 
 	/* XXX Consider parameterized paths for the join relation */
 }
