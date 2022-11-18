@@ -404,13 +404,17 @@ fdw_relinfo_create(PlannerInfo *root, RelOptInfo *rel, Oid server_oid, Oid local
 	 */
 
 	fpinfo->relation_name = makeStringInfo();
-	refname = rte->eref->aliasname;
-	appendStringInfo(fpinfo->relation_name,
-					 "%s.%s",
-					 quote_identifier(get_namespace_name(get_rel_namespace(rte->relid))),
-					 quote_identifier(get_rel_name(rte->relid)));
-	if (*refname && strcmp(refname, get_rel_name(rte->relid)) != 0)
-		appendStringInfo(fpinfo->relation_name, " %s", quote_identifier(rte->eref->aliasname));
+
+	if (rte != NULL)
+	{
+		refname = rte->eref->aliasname;
+		appendStringInfo(fpinfo->relation_name,
+						 "%s.%s",
+						 quote_identifier(get_namespace_name(get_rel_namespace(rte->relid))),
+						 quote_identifier(get_rel_name(rte->relid)));
+		if (*refname && strcmp(refname, get_rel_name(rte->relid)) != 0)
+			appendStringInfo(fpinfo->relation_name, " %s", quote_identifier(rte->eref->aliasname));
+	}
 
 	if (type == TS_FDW_RELINFO_HYPERTABLE)
 	{
@@ -502,7 +506,7 @@ fdw_relinfo_create(PlannerInfo *root, RelOptInfo *rel, Oid server_oid, Oid local
 	 * rels (there's no corresponding table in the system to associate
 	 * stats with). Instead, data node rels already have basic stats set
 	 * at creation time based on data-node-chunk assignment. */
-	if (fpinfo->type != TS_FDW_RELINFO_HYPERTABLE_DATA_NODE)
+	if (fpinfo->type != TS_FDW_RELINFO_HYPERTABLE_DATA_NODE && OidIsValid(rel->relid))
 		set_baserel_size_estimates(root, rel);
 
 	/* Fill in basically-bogus cost estimates for use later. */

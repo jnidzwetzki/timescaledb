@@ -1653,7 +1653,8 @@ static void
 get_foreign_join_paths_hook(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
 							RelOptInfo *innerrel, JoinType jointype, JoinPathExtraData *extra)
 {
-	if (ts_cm_functions->mn_set_foreign_join_paths != NULL)
+	/* Left table is a distributed hypertable */
+	if (outerrel->fdw_private != NULL && ts_cm_functions->mn_set_foreign_join_paths != NULL)
 		ts_cm_functions
 			->mn_set_foreign_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 
