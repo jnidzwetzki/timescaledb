@@ -17,7 +17,7 @@ extern void data_node_scan_create_upper_paths(PlannerInfo *root, UpperRelationKi
 											  RelOptInfo *input_rel, RelOptInfo *output_rel,
 											  void *extra);
 
-extern void generate_pushdown_join_paths(PlannerInfo *root,
+extern void data_node_generate_pushdown_join_paths(PlannerInfo *root,
 							RelOptInfo *joinrel,
 							RelOptInfo *outerrel,
 							RelOptInfo *innerrel,
