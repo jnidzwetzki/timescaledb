@@ -377,12 +377,8 @@ get_foreign_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
  *		Add possible ForeignPath to joinrel, if join is safe to push down.
  */
 void
-ts_get_foreign_join_paths(PlannerInfo *root,
-							RelOptInfo *joinrel,
-							RelOptInfo *outerrel,
-							RelOptInfo *innerrel,
-							JoinType jointype,
-							JoinPathExtraData *extra)
+ts_get_foreign_join_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
+						  RelOptInfo *innerrel, JoinType jointype, JoinPathExtraData *extra)
 {
 	data_node_generate_pushdown_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 }
@@ -431,4 +427,3 @@ timescaledb_fdw_validator(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VOID();
 }
-

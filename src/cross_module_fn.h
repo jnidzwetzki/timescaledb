@@ -206,12 +206,9 @@ typedef struct CrossModuleFunctions
 	void (*compress_row_end)(CompressSingleRowState *cr);
 	void (*compress_row_destroy)(CompressSingleRowState *cr);
 	PGFunction health_check;
-	void (*mn_set_foreign_join_paths)(PlannerInfo *root,
-							 RelOptInfo *joinrel,
-							 RelOptInfo *outerrel,
-							 RelOptInfo *innerrel,
-							 JoinType jointype,
-							 JoinPathExtraData *extra);
+	void (*mn_set_foreign_join_paths)(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
+									  RelOptInfo *innerrel, JoinType jointype,
+									  JoinPathExtraData *extra);
 } CrossModuleFunctions;
 
 extern TSDLLEXPORT CrossModuleFunctions *ts_cm_functions;

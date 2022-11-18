@@ -297,26 +297,31 @@ option_extract_join_ref_table_list(const char *table_string)
 		/* syntax error in name list */
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("parameter \"%s\" must be a list of reference table names", "join_reference_tables")));
+				 errmsg("parameter \"%s\" must be a list of reference table names",
+						"join_reference_tables")));
 	}
 
 	foreach (lc, ref_table_list)
 	{
-		char *tablename= (char *) lfirst(lc);
+		char *tablename = (char *) lfirst(lc);
 
 		RangeVar *rangevar = makeRangeVarFromNameList(stringToQualifiedNameList(tablename));
 
- 		Oid relOid = RangeVarGetRelidExtended(rangevar, AccessShareLock, RVR_MISSING_OK,
-                                                                                  NULL /* callback */,
-                                                                                  NULL /* callback args*/);
+		Oid relOid = RangeVarGetRelidExtended(rangevar,
+											  AccessShareLock,
+											  RVR_MISSING_OK,
+											  NULL /* callback */,
+											  NULL /* callback args*/);
 
 		if (OidIsValid(relOid))
 		{
-			if(ts_is_hypertable(relOid))
+			if (ts_is_hypertable(relOid))
 			{
 				ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("table \"%s\" is a hypertable. Only plain tables are supported as join reference", tablename)));
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("table \"%s\" is a hypertable. Only plain tables are supported as "
+								"join reference",
+								tablename)));
 			}
 			ref_table_oids = lappend_oid(ref_table_oids, relOid);
 		}
@@ -324,5 +329,5 @@ option_extract_join_ref_table_list(const char *table_string)
 
 	list_free(ref_table_list);
 
-	return ref_table_oids;	
+	return ref_table_oids;
 }
