@@ -1637,26 +1637,22 @@ cagg_reorder_groupby_clause(RangeTblEntry *subq_rte, Index rtno, List *outer_sor
 	}
 }
 
-/* Register our join pushdown hook. Becuase for PostgreSQL 
- * the tables we are operating on are local tables. So, 
+/* Register our join pushdown hook. Becuase for PostgreSQL
+ * the tables we are operating on are local tables. So,
  * the FDW hooks are not called. Register our join path
- * generation as a generic planer hook. 
+ * generation as a generic planer hook.
  */
 
 static void
-get_foreign_join_paths_hook(PlannerInfo *root,
-							RelOptInfo *joinrel,
-							RelOptInfo *outerrel,
-							RelOptInfo *innerrel,
-							JoinType jointype,
-							JoinPathExtraData *extra)
+get_foreign_join_paths_hook(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
+							RelOptInfo *innerrel, JoinType jointype, JoinPathExtraData *extra)
 {
-
-	if (ts_cm_functions->mn_set_foreign_join_paths)
-		ts_cm_functions->mn_set_foreign_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
+	if (ts_cm_functions->mn_set_foreign_join_paths != NULL)
+		ts_cm_functions
+			->mn_set_foreign_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 
 	if (prev_set_join_pathlist_hook != NULL)
-			(*prev_set_join_pathlist_hook)(root, joinrel, outerrel, innerrel, jointype, extra);
+		(*prev_set_join_pathlist_hook)(root, joinrel, outerrel, innerrel, jointype, extra);
 }
 
 void

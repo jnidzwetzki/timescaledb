@@ -78,12 +78,12 @@ apply_fdw_and_server_options(TsFdwRelInfo *fpinfo)
 								option_extract_extension_list(defGetString(def), false));
 			else if (strcmp(def->defname, "fetch_size") == 0)
 				fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
-			else if(strcmp(def->defname, "join_reference_tables") == 0)
+			else if (strcmp(def->defname, "join_reference_tables") == 0)
 			{
-				/* These option can only be defined per FDW. So, no list_concat of 
+				/* These option can only be defined per FDW. So, no list_concat of
 				 * FDW and server options is needed. */
 				fpinfo->join_reference_tables =
-								option_extract_join_ref_table_list(defGetString(def));
+					option_extract_join_ref_table_list(defGetString(def));
 			}
 		}
 	}

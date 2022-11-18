@@ -548,7 +548,7 @@ TSDLLEXPORT CrossModuleFunctions ts_cm_functions_default = {
 	.hypertable_distributed_set_replication_factor = error_no_default_fn_pg_community,
 	.update_compressed_chunk_relstats = update_compressed_chunk_relstats_default,
 	.health_check = error_no_default_fn_pg_community,
-        .mn_set_foreign_join_paths = NULL,
+	.mn_set_foreign_join_paths = NULL,
 };
 
 TSDLLEXPORT CrossModuleFunctions *ts_cm_functions = &ts_cm_functions_default;

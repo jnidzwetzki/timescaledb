@@ -757,14 +757,10 @@ is_safe_to_pushdown_reftable_join(PlannerInfo *root, TsFdwRelInfo *fpinfo)
 	return true;
 }
 
-
 void
-data_node_generate_pushdown_join_paths(PlannerInfo *root,
-							RelOptInfo *joinrel,
-							RelOptInfo *outerrel,
-							RelOptInfo *innerrel,
-							JoinType jointype,
-							JoinPathExtraData *extra)
+data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
+									   RelOptInfo *innerrel, JoinType jointype,
+									   JoinPathExtraData *extra)
 {
 	TsFdwRelInfo *fpinfo;
 	ForeignPath *joinpath;
@@ -802,22 +798,16 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root,
 	 * the remote side like quals in WHERE clause, so pass jointype as
 	 * JOIN_INNER.
 	 */
-	fpinfo->local_conds_sel = clauselist_selectivity(root,
-													 fpinfo->local_conds,
-													 0,
-													 JOIN_INNER,
-													 NULL);
+	fpinfo->local_conds_sel =
+		clauselist_selectivity(root, fpinfo->local_conds, 0, JOIN_INNER, NULL);
 	cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
 
 	/*
 	 * If we are going to estimate costs locally, estimate the join clause
 	 * selectivity here while we have special join info.
 	 */
-	fpinfo->joinclause_sel = clauselist_selectivity(root,
-													fpinfo->joinclauses,
-													0,
-													fpinfo->jointype,
-													extra->sjinfo);
+	fpinfo->joinclause_sel =
+		clauselist_selectivity(root, fpinfo->joinclauses, 0, fpinfo->jointype, extra->sjinfo);
 
 	/* Estimate costs for bare join relation */
 	fdw_estimate_path_cost_size(root, joinrel, NIL, &rows, &width, &startup_cost, &total_cost);
