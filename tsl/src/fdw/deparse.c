@@ -1445,6 +1445,33 @@ deparseSubqueryTargetList(deparse_expr_cxt *context)
 	if (first)
 		appendStringInfoString(buf, "NULL");
 }
+/* Output join name for given join type */
+const char *
+get_jointype_name(JoinType jointype)
+{
+	switch (jointype)
+	{
+		case JOIN_INNER:
+			return "INNER";
+
+		case JOIN_LEFT:
+			return "LEFT";
+
+		case JOIN_RIGHT:
+			return "RIGHT";
+
+		case JOIN_FULL:
+			return "FULL";
+
+		default:
+			/* Shouldn't come here, but protect from buggy code. */
+			elog(ERROR, "unsupported join type %d", jointype);
+	}
+
+	/* Keep compiler happy */
+	return NULL;
+}
+
 
 /*
  * Construct FROM clause for given relation
@@ -1464,9 +1491,48 @@ deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 					  Index ignore_rel, List **ignore_conds, List **params_list)
 {
 	if (IS_JOIN_REL(foreignrel))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("distributed JOINs are currently unsupported")));
+    {
+	    TsFdwRelInfo *fpinfo = fdw_relinfo_get(foreignrel);
+		StringInfoData join_sql_o;
+		StringInfoData join_sql_i;
+		RelOptInfo *outerrel = fpinfo->outerrel;
+		RelOptInfo *innerrel = fpinfo->innerrel;
+
+        //Outer Rel
+		RangeTblEntry *rte = planner_rt_fetch(outerrel->relid, root);
+		Relation rel = table_open(rte->relid, NoLock);
+		deparseRelation(&join_sql_o, rel);
+
+        //Inner Rel
+		rte = planner_rt_fetch(innerrel->relid, root);
+		rel = table_open(rte->relid, NoLock);
+		deparseRelation(&join_sql_i, rel);
+		/*
+		 * For a join relation FROM clause entry is deparsed as
+		 *
+		 * ((outer relation) <join type> (inner relation) ON (joinclauses))
+		 */
+		appendStringInfo(buf, "(%s %s JOIN %s ON ", join_sql_o.data,
+						 get_jointype_name(fpinfo->jointype), join_sql_i.data);
+
+		/* Append join clause; (TRUE) if no join clause */
+		if (fpinfo->joinclauses)
+		{
+			deparse_expr_cxt context;
+
+			context.buf = buf;
+			context.foreignrel = foreignrel;
+			context.scanrel = foreignrel;
+			context.root = root;
+			context.params_list = params_list;
+
+			appendStringInfoChar(buf, '(');
+			appendConditions(fpinfo->joinclauses, &context, true);
+			appendStringInfoChar(buf, ')');
+		}
+		else
+			appendStringInfoString(buf, "(TRUE)");
+    }
 	else
 	{
 		RangeTblEntry *rte = planner_rt_fetch(foreignrel->relid, root);
