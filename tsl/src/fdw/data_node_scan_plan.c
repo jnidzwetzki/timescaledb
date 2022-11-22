@@ -762,12 +762,12 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 									   RelOptInfo *innerrel, JoinType jointype,
 									   JoinPathExtraData *extra)
 {
-	ForeignPath *joinpath;
-	double rows;
-	int width;
-	Cost startup_cost;
-	Cost total_cost;
-	Path *epq_path = NULL;
+	//ForeignPath *joinpath;
+	double rows = 0;
+	int width = 0;
+	Cost startup_cost = 0;
+	Cost total_cost = 0;
+	//Path *epq_path = NULL;
 	RelOptInfo **data_node_rels;
 	int ndata_node_rels;
 	DataNodeChunkAssignments scas;
@@ -796,29 +796,21 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 		Assert(rel || true);
 	}
 
-	int nchunk_rels = hyperrel->nparts;
-	RelOptInfo **chunk_rels = hyperrel->part_rels;
-	// RangeTblEntry *hyper_rte = planner_rt_fetch(hyperrel->relid, root);
+	//RangeTblEntry *hyper_rte = planner_rt_fetch(hyperrel->relid, root);
 	Cache *hcache = ts_hypertable_cache_pin();
 	Hypertable *ht = ts_hypertable_cache_get_entry(hcache, hyper_rte->relid, CACHE_FLAG_NONE);
 
 	Assert(NULL != ht);
 
-	if (nchunk_rels <= 0)
-	{
-		ts_cache_release(hcache);
-		return;
-	}
-
 	/* Create the RelOptInfo for each data node */
-	data_node_rels = build_data_node_part_rels(root, hyperrel, &ndata_node_rels);
+	//data_node_rels = build_data_node_part_rels(root, hyperrel, &ndata_node_rels);
+	data_node_rels = hyperrel->part_rels;
+	ndata_node_rels = hyperrel->nparts;
 
 	Assert(ndata_node_rels > 0);
+	Assert(data_node_rels != NULL);
 
 	data_node_chunk_assignments_init(&scas, SCA_STRATEGY_ATTACHED_DATA_NODE, root, ndata_node_rels);
-
-	/* Assign chunks to data nodes */
-	data_node_chunk_assignment_assign_chunks(&scas, chunk_rels, nchunk_rels);
 
 	/*
 	 * This code does not work for joins with lateral references, since those
@@ -857,9 +849,7 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 		fpinfo->sca = sca;
 
 		if (!is_safe_to_pushdown_reftable_join(root, fpinfo))
-			break;
-
-		ereport(DEBUG1, (errmsg("Pushdown join with reference table")));
+			return;
 
 		/*
 		 * Compute the selectivity and cost of the local_conds, so we don't have
@@ -881,7 +871,7 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 			clauselist_selectivity(root, fpinfo->joinclauses, 0, fpinfo->jointype, extra->sjinfo);
 
 		/* Estimate costs for bare join relation */
-		fdw_estimate_path_cost_size(root, joinrel, NIL, &rows, &width, &startup_cost, &total_cost);
+		//fdw_estimate_path_cost_size(root, joinrel, NIL, &rows, &width, &startup_cost, &total_cost);
 
 		/* Now update this information in the joinrel */
 		joinrel->rows = rows;
@@ -891,31 +881,35 @@ data_node_generate_pushdown_join_paths(PlannerInfo *root, RelOptInfo *joinrel, R
 		fpinfo->startup_cost = startup_cost;
 		fpinfo->total_cost = total_cost;
 
-		/*
-		 * Create a new join path and add it to the joinrel which represents a
-		 * join between foreign tables.
-		 */
-		joinpath = create_foreign_join_path(root,
-											joinrel,
-											NULL, /* default pathtarget */
-											rows,
-											startup_cost,
-											total_cost,
-											NIL, /* no pathkeys */
-											joinrel->lateral_relids,
-											epq_path,
-											NIL); /* no fdw_private */
-
-		/* Add generated path into joinrel by add_path(). */
-		add_path(joinrel, (Path *) joinpath);
-
-		/* Consider pathkeys for the join relation */
-		fdw_add_paths_with_pathkeys_for_rel(root,
-											joinrel,
-											epq_path,
-											data_node_scan_path_create); // TODO: Is the last
-																		 // parameter correct?
 	}
+
+	ereport(DEBUG1, (errmsg("Pushdown join with reference table")));
+
+
+	/*
+	* Create a new join path and add it to the joinrel which represents a
+	* join between foreign tables.
+	*/
+	// joinpath = create_foreign_join_path(root,
+	// 									joinrel,
+	// 									NULL, /* default pathtarget */
+	// 									rows,
+	// 									startup_cost,
+	// 									total_cost,
+	// 									NIL, /* no pathkeys */
+	// 									joinrel->lateral_relids,
+	// 									epq_path,
+	// 									NIL); /* no fdw_private */
+
+	/* Add generated path into joinrel by add_path(). */
+	//add_path(joinrel, (Path *) joinpath);
+
+	/* Consider pathkeys for the join relation */
+	// fdw_add_paths_with_pathkeys_for_rel(root,
+	// 									joinrel,
+	// 									epq_path,
+	// 									data_node_scan_path_create); // TODO: Is the last
+	// 																	// parameter correct?
 
 	ts_cache_release(hcache);
 
