@@ -81,12 +81,14 @@ typedef struct DecompressChunkState
 	List *hypertable_compression_info;
 	int counter;
 	MemoryContext per_batch_context;
+	bool segment_merge_append;
 } DecompressChunkState;
 
 static TupleTableSlot *decompress_chunk_exec(CustomScanState *node);
 static void decompress_chunk_begin(CustomScanState *node, EState *estate, int eflags);
 static void decompress_chunk_end(CustomScanState *node);
 static void decompress_chunk_rescan(CustomScanState *node);
+static void decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 static TupleTableSlot *decompress_chunk_create_tuple(DecompressChunkState *state);
 
 static CustomExecMethods decompress_chunk_state_methods = {
@@ -94,6 +96,7 @@ static CustomExecMethods decompress_chunk_state_methods = {
 	.ExecCustomScan = decompress_chunk_exec,
 	.EndCustomScan = decompress_chunk_end,
 	.ReScanCustomScan = decompress_chunk_rescan,
+	.ExplainCustomScan = decompress_chunk_explain,
 };
 
 Node *
@@ -110,6 +113,7 @@ decompress_chunk_state_create(CustomScan *cscan)
 	state->hypertable_id = linitial_int(settings);
 	state->chunk_relid = lsecond_int(settings);
 	state->reverse = lthird_int(settings);
+	state->segment_merge_append = lfourth_int(settings);
 	state->decompression_map = lsecond(cscan->custom_private);
 
 	return (Node *) state;
@@ -128,6 +132,10 @@ initialize_column_state(DecompressChunkState *state)
 	ScanState *ss = (ScanState *) state;
 	TupleDesc desc = ss->ss_ScanTupleSlot->tts_tupleDescriptor;
 	ListCell *lc;
+
+	if (state->segment_merge_append) {
+		elog(WARNING, "Use merge append optimization");
+	}
 
 	if (list_length(state->decompression_map) == 0)
 	{
@@ -407,6 +415,17 @@ decompress_chunk_end(CustomScanState *node)
 {
 	MemoryContextReset(((DecompressChunkState *) node)->per_batch_context);
 	ExecEndNode(linitial(node->custom_ps));
+}
+
+/*
+ * Output additional information for EXPLAIN of a custom-scan plan node.
+ */
+static void decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *es)
+{
+	DecompressChunkState *state = (DecompressChunkState *) node;
+
+	if (es->verbose || es->format != EXPLAIN_FORMAT_TEXT)
+		ExplainPropertyBool("Per segment merge append", state->segment_merge_append, es);
 }
 
 /*

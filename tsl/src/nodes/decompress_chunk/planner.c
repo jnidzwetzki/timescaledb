@@ -469,9 +469,10 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 
 	Assert(list_length(custom_plans) == 1);
 
-	settings = list_make3_int(dcpath->info->hypertable_id,
+	settings = list_make4_int(dcpath->info->hypertable_id,
 							  dcpath->info->chunk_rte->relid,
-							  dcpath->reverse);
+							  dcpath->reverse,
+							  dcpath->segment_merge_append);
 	decompress_plan->custom_private = list_make2(settings, dcpath->decompression_map);
 
 	return &decompress_plan->scan.plan;
