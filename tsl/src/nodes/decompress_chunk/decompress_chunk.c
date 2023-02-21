@@ -359,9 +359,13 @@ cost_decompress_chunk(Path *path, Path *compressed_path)
 	path->rows = compressed_path->rows * DECOMPRESS_CHUNK_BATCH_SIZE;
 }
 
-// TODO
+/*
+ * Is the query by ordering a prefix of the compression order by, we don't need to sort
+ * sort the tuples. We can perform a merge append of the segments. This function checks 
+ * if the compression ordering and the query ordering are compatible. 
+ */
 static bool
-ts_is_able_to_use_segment_by_optimization(PlannerInfo *root, CompressionInfo *info, Chunk *chunk)
+is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Chunk *chunk)
 {
 	int pk_index;
 	PathKey *pk;
@@ -375,58 +379,9 @@ ts_is_able_to_use_segment_by_optimization(PlannerInfo *root, CompressionInfo *in
 	if (pathkeys == NIL || ts_chunk_is_unordered(chunk) || ts_chunk_is_partial(chunk))
 		return false;
 
-	/* all segmentby columns need to be prefix of pathkeys */
-	if (info->num_segmentby_columns > 0)
-	{
-		Bitmapset *segmentby_columns;
-
-		// 		find_restrictinfo_equality(chunk_rel, info); // TODO is this needed here?
-		segmentby_columns = bms_copy(info->chunk_segmentby_ri);
-
-		for (pk_index = 1; lc != NULL; lc = lnext_compat(pathkeys, lc), pk_index++)
-		{
-			Assert(bms_num_members(segmentby_columns) <= info->num_segmentby_columns);
-			pk = lfirst(lc);
-			
-			expr = find_em_expr_for_rel(pk->pk_eclass, info->chunk_rel);
-
-			if (expr == NULL || !IsA(expr, Var))
-				return false;
-
-			var = castNode(Var, expr);
-
-			/* Filter system attributes */
-			if (var->varattno <= 0)
-				return false;
-
-			column_name = get_attname(info->chunk_rte->relid, var->varattno, false);
-			ci = get_column_compressioninfo(info->hypertable_compression_info, column_name);
-
-			/* Test that the current attribute of the pathkey is a segment_by column */
-			if (ci->segmentby_column_index <= 0)
-				break;
-
-			// TODO: Check if we can lift the order by restrictions
-
-			/* Test that the segment_by column is a prefix of the query pathkeys */
-			if (ci->segmentby_column_index != pk_index)
-				return false;
-
-			/* Test that ORDER BY and NULLS first/last do match */
-			if(ci->orderby_nullsfirst != pk->pk_nulls_first)
-				return false;
-
-			if ((ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber) && 
-				(! ci->orderby_asc && pk->pk_strategy == BTLessStrategyNumber))
-				return false;
-			
-			segmentby_columns = bms_add_member(segmentby_columns, var->varattno);
-		}
-	}
-
-	/*
-	* loop over the rest of pathkeys
-	* this needs to exactly match the configured compress_orderby
+   /*
+	* Loop over the of pathkeys of the query. These pathkeys
+	* need to exactly match the configured compress_orderby pathkeys.
 	*/
 	for (pk_index = 1; lc != NULL; lc = lnext_compat(pathkeys, lc), pk_index++)
 	{
@@ -650,8 +605,8 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 			add_path(chunk_rel, &dcpath->cpath.path);
 		}
 
-		/* Compression segment optimization. Perform a merge append of the involved segments */
-		if (ts_is_able_to_use_segment_by_optimization(root, info, chunk))
+		/* Compression segment append optimization. Perform a merge append of the involved segments */
+		if (is_able_to_use_segment_merge_append(root, info, chunk))
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 			pathkeys_contained_in(sort_info.compressed_pathkeys, child_path->pathkeys);

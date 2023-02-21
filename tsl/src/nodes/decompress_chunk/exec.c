@@ -17,6 +17,7 @@
 #include <utils/datum.h>
 #include <utils/memutils.h>
 #include <utils/typcache.h>
+#include <lib/binaryheap.h>
 
 #include "compat/compat.h"
 #include "compression/array.h"
@@ -67,12 +68,20 @@ typedef struct DecompressChunkColumnState
 	};
 } DecompressChunkColumnState;
 
+typedef struct DecompressSegmentState 
+{
+	TupleTableSlot *ms_slots;	/* array of length ms_nplans */
+	DecompressChunkColumnState *columns;
+	List *decompression_map;
+	int num_columns;
+} DecompressSegmentState;
+
 typedef struct DecompressChunkState
 {
 	CustomScanState csstate;
-	List *decompression_map;
-	int num_columns;
-	DecompressChunkColumnState *columns;
+	List *decompression_map; // TODO: Remove later
+	int num_columns; // TODO: Remove later
+	DecompressChunkColumnState *columns; // TODO: Remove later
 
 	bool initialized;
 	bool reverse;
@@ -81,7 +90,12 @@ typedef struct DecompressChunkState
 	List *hypertable_compression_info;
 	int counter;
 	MemoryContext per_batch_context;
+
+	/* Merge append optimization. */
 	bool segment_merge_append;
+	struct binaryheap *ms_heap; /* binary heap of slot indices */
+	DecompressSegmentState **segment_states;
+
 } DecompressChunkState;
 
 static TupleTableSlot *decompress_chunk_exec(CustomScanState *node);
@@ -132,10 +146,6 @@ initialize_column_state(DecompressChunkState *state)
 	ScanState *ss = (ScanState *) state;
 	TupleDesc desc = ss->ss_ScanTupleSlot->tts_tupleDescriptor;
 	ListCell *lc;
-
-	if (state->segment_merge_append) {
-		elog(WARNING, "Use merge append optimization");
-	}
 
 	if (list_length(state->decompression_map) == 0)
 	{
@@ -309,13 +319,15 @@ decompress_chunk_begin(CustomScanState *node, EState *estate, int eflags)
 }
 
 static void
-initialize_batch(DecompressChunkState *state, TupleTableSlot *slot)
+initialize_batch(DecompressChunkState *state, TupleTableSlot *slot, bool reset_memory_ctx)
 {
 	Datum value;
 	bool isnull;
 	int i;
 	MemoryContext old_context = MemoryContextSwitchTo(state->per_batch_context);
-	MemoryContextReset(state->per_batch_context);
+
+	if(reset_memory_ctx)
+		MemoryContextReset(state->per_batch_context);
 
 	for (i = 0; i < state->num_columns; i++)
 	{
@@ -367,6 +379,18 @@ initialize_batch(DecompressChunkState *state, TupleTableSlot *slot)
 	MemoryContextSwitchTo(old_context);
 }
 
+/*
+ * Compare the tuples in the two given slots.
+ */
+static int32
+heap_compare_slots(Datum a, Datum b, void *arg)
+{
+
+	// TODO
+	return 0;
+}
+
+//TODO
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
 {
@@ -376,30 +400,103 @@ decompress_chunk_exec(CustomScanState *node)
 	if (node->custom_ps == NIL)
 		return NULL;
 
-	while (true)
-	{
-		TupleTableSlot *slot = decompress_chunk_create_tuple(state);
+	/* Are we going to merge the segments or do we decompress
+	 * the tuples directly.
+	 */
+	if (state->segment_merge_append) {
+		int i;
 
-		if (TupIsNull(slot))
-			return NULL;
+		elog(WARNING, "Use merge append optimization");
+		
+		/* Create the heap on the first call. */
+		if(state -> ms_heap == NULL) {
 
-		econtext->ecxt_scantuple = slot;
+			/* Open and count all segments */
+			TupleTableSlot *subslot = NULL;
+			List* subslots = NIL;
 
-		/* Reset expression memory context to clean out any cruft from
-		 * previous tuple. */
-		ResetExprContext(econtext);
+			while(true)
+			{
+				subslot = ExecProcNode(linitial(state->csstate.custom_ps));
 
-		if (node->ss.ps.qual && !ExecQual(node->ss.ps.qual, econtext))
-		{
-			InstrCountFiltered1(node, 1);
-			ExecClearTuple(slot);
-			continue;
+				if (TupIsNull(subslot))
+					break;
+				
+				subslots = lappend(subslots, subslot);
+			}
+
+			int nsegments = subslots->length;
+			elog(WARNING, "We have seen %d number of child segments", nsegments);
+
+			state->segment_states = (DecompressSegmentState**) palloc0(sizeof(DecompressSegmentState *) * nsegments);
+			state->ms_heap = binaryheap_allocate(nsegments, heap_compare_slots, state);
+			// TODO: Decompress top tuple of our segments and insert them into the heap
+			// binaryheap_add_unordered(node->ms_heap, Int32GetDatum(i));
+
+			binaryheap_build(state->ms_heap);
 		}
 
-		if (!node->ss.ps.ps_ProjInfo)
-			return slot;
+		/* All tuples are decompressed */
+		if (binaryheap_empty(state->ms_heap))
+		{
+			return NULL;
+		}
 
-		return ExecProject(node->ss.ps.ps_ProjInfo);
+		/* Remove the tuple we have returned last time and decompress 
+		 * the next tuple from the segment. This operation is delayed 
+		 * up to this point where the next tuple actually needs to be 
+		 * decompressed.
+		 */
+		i = DatumGetInt32(binaryheap_first(state->ms_heap));
+
+		/* Decompress the next tuple from segment */
+		// 		node->ms_slots[i] = ExecProcNode(node->mergeplans[i]);
+
+		/* Put the next tuple into the heap */
+		// if segment batch is exhausted
+		// (void) binaryheap_remove_first(node->ms_heap);
+		// else 
+		//	binaryheap_replace_first(node->ms_heap, Int32GetDatum(i));
+
+		if (binaryheap_empty(state->ms_heap))
+			return NULL;
+
+		// TODO:
+
+		/* Return the next tuple from our heap. */
+		i = DatumGetInt32(binaryheap_first(state->ms_heap));
+		Assert(i >= 0);
+
+		TupleTableSlot *result = state->segment_states[i]->ms_slots;
+		Assert(result != NULL);
+
+		return result;
+	} else {
+		while (true)
+		{
+			TupleTableSlot *slot = decompress_chunk_create_tuple(state);
+
+			if (TupIsNull(slot))
+				return NULL;
+
+			econtext->ecxt_scantuple = slot;
+
+			/* Reset expression memory context to clean out any cruft from
+			* previous tuple. */
+			ResetExprContext(econtext);
+
+			if (node->ss.ps.qual && !ExecQual(node->ss.ps.qual, econtext))
+			{
+				InstrCountFiltered1(node, 1);
+				ExecClearTuple(slot);
+				continue;
+			}
+
+			if (!node->ss.ps.ps_ProjInfo)
+				return slot;
+
+			return ExecProject(node->ss.ps.ps_ProjInfo);
+		}
 	}
 }
 
@@ -448,7 +545,7 @@ decompress_chunk_create_tuple(DecompressChunkState *state)
 				return NULL;
 
 			batch_done = false;
-			initialize_batch(state, subslot);
+			initialize_batch(state, subslot, true);
 		}
 
 		ExecClearTuple(slot);
