@@ -413,9 +413,12 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 }
 
 // TODO
-// * [ ] Optimize multiple batches per segment via hashmap
+// * [ ] Read entire segments
+// * [ ] Implement compare function
 // * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order
 // * [ ] Improve cost model
+// * [ ] Write/Enhance test cases
+// * [ ] Optional: Optimize multiple batches per segment via hashmap
 
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
@@ -514,12 +517,11 @@ decompress_chunk_exec(CustomScanState *node)
 		if (binaryheap_empty(chunk_state->ms_heap))
 			return NULL;
 
-		// TODO
-
 		/* Return the next tuple from our heap. */
 		i = DatumGetInt32(binaryheap_first(chunk_state->ms_heap));
 		Assert(i >= 0);
 
+		/* Fetch tuple from slot */
 		TupleTableSlot *result = chunk_state->segment_states[i].uncompressed_tuple_slot;
 		Assert(result != NULL);
 
