@@ -361,8 +361,8 @@ cost_decompress_chunk(Path *path, Path *compressed_path)
 
 /*
  * Is the query by ordering a prefix of the compression order by, we don't need to sort
- * sort the tuples. We can perform a merge append of the segments. This function checks 
- * if the compression ordering and the query ordering are compatible. 
+ * sort the tuples. We can perform a merge append of the segments. This function checks
+ * if the compression ordering and the query ordering are compatible.
  */
 static bool
 is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Chunk *chunk)
@@ -372,17 +372,17 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 	Var *var;
 	Expr *expr;
 	char *column_name;
-	List* pathkeys = root->query_pathkeys;
+	List *pathkeys = root->query_pathkeys;
 	FormData_hypertable_compression *ci;
 	ListCell *lc = list_head(pathkeys);
 
 	if (pathkeys == NIL || ts_chunk_is_unordered(chunk) || ts_chunk_is_partial(chunk))
 		return false;
 
-   /*
-	* Loop over the of pathkeys of the query. These pathkeys
-	* need to exactly match the configured compress_orderby pathkeys.
-	*/
+	/*
+	 * Loop over the of pathkeys of the query. These pathkeys
+	 * need to exactly match the configured compress_orderby pathkeys.
+	 */
 	for (pk_index = 1; lc != NULL; lc = lnext_compat(pathkeys, lc), pk_index++)
 	{
 		pk = lfirst(lc);
@@ -403,11 +403,11 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 			return false;
 
 		/* Test that ORDER BY and NULLS first/last do match */
-		if(ci->orderby_nullsfirst != pk->pk_nulls_first)
+		if (ci->orderby_nullsfirst != pk->pk_nulls_first)
 			return false;
 
-		if ((ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber) && 
-			(! ci->orderby_asc && pk->pk_strategy == BTLessStrategyNumber))
+		if ((ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber) &&
+			(!ci->orderby_asc && pk->pk_strategy == BTLessStrategyNumber))
 			return false;
 	}
 
@@ -605,19 +605,20 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 			add_path(chunk_rel, &dcpath->cpath.path);
 		}
 
-		/* Compression segment append optimization. Perform a merge append of the involved segments */
+		/* Compression segment append optimization. Perform a merge append of the involved segments
+		 */
 		if (is_able_to_use_segment_merge_append(root, info, chunk))
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 			pathkeys_contained_in(sort_info.compressed_pathkeys, child_path->pathkeys);
 
-			dcpath->segment_merge_append=true;
-			//dcpath->cpath.path.startup_cost=child_path->rows * 0.1; // TODO
-			//dcpath->cpath.path.total_cost=child_path->rows * 0.15;  // TODO
-			dcpath->cpath.path.startup_cost=0.001;
-			dcpath->cpath.path.total_cost=0.0015;
+			dcpath->segment_merge_append = true;
+			// dcpath->cpath.path.startup_cost=child_path->rows * 0.1; // TODO
+			// dcpath->cpath.path.total_cost=child_path->rows * 0.15;  // TODO
+			dcpath->cpath.path.startup_cost = 0.001;
+			dcpath->cpath.path.total_cost = 0.0015;
 
-			/* The segment by optimization is only enabled if it can deliver the tuples in the 
+			/* The segment by optimization is only enabled if it can deliver the tuples in the
 			 * same order as the query requested it. So, we can just copy the pathkeys of the
 			 * query here.
 			 */
@@ -645,7 +646,6 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 		 * add_path */
 		add_path(chunk_rel, path);
 	}
-
 
 	/* the chunk_rel now owns the paths, remove them from the compressed_rel so they can't be freed
 	 * if it's planned */
