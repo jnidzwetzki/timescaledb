@@ -93,10 +93,22 @@ typedef struct DecompressChunkState
 	int no_batch_states;				/* number of batch states */
 	DecompressBatchState *batch_states; /* the batch states */
 
-	bool segment_merge_append;	/* Merge append optimization. */
+	bool segment_merge_append;	/* Merge append optimization */
 	struct binaryheap *ms_heap; /* binary heap of slot indices */
 
+	/* Sort keys for merge append */
+	int no_sortkeys;
+	SortSupportData *sortkeys;
 } DecompressChunkState;
+
+/*
+ * From nodeMergeAppend.c
+ *
+ * We have one slot for each item in the heap array.  We use SlotNumber
+ * to store slot indexes.  This doesn't actually provide any formal
+ * type-safety, but it makes the code more self-documenting.
+ */
+typedef int32 SlotNumber;
 
 static TupleTableSlot *decompress_chunk_exec(CustomScanState *node);
 static void decompress_chunk_begin(CustomScanState *node, EState *estate, int eflags);
@@ -410,7 +422,39 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 static int32
 heap_compare_slots(Datum a, Datum b, void *arg)
 {
-	// TODO
+	DecompressChunkState *chunk_state = (DecompressChunkState *) arg;
+	SlotNumber batchA = DatumGetInt32(a);
+	Assert(batchA <= chunk_state->no_batch_states);
+
+	SlotNumber batchB = DatumGetInt32(b);
+	Assert(batchB <= chunk_state->no_batch_states);
+
+	TupleTableSlot *tupleA = chunk_state->batch_states[batchA].uncompressed_tuple_slot;
+	Assert(!TupIsNull(tupleA));
+
+	TupleTableSlot *tupleB = chunk_state->batch_states[batchB].uncompressed_tuple_slot;
+	Assert(!TupIsNull(tupleB));
+
+	for (int nkey = 0; nkey < chunk_state->no_sortkeys; nkey++)
+	{
+		SortSupportData *sortKey = &chunk_state->sortkeys[nkey];
+		Assert(sortKey != NULL);
+		AttrNumber attno = sortKey->ssup_attno;
+
+		bool isNullA, isNullB;
+
+		Datum datumA = slot_getattr(tupleA, attno, &isNullA);
+		Datum datumB = slot_getattr(tupleB, attno, &isNullB);
+
+		int compare = ApplySortComparator(datumA, isNullA, datumB, isNullB, sortKey);
+
+		if (compare != 0)
+		{
+			INVERT_COMPARE_RESULT(compare);
+			return compare;
+		}
+	}
+
 	return 0;
 }
 
@@ -420,6 +464,37 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 // * [ ] Improve cost model
 // * [ ] Write/Enhance test cases
 // * [ ] Optional: Optimize multiple batches per segment via hashmap
+
+/*
+ * Inspired by nodeMergeAppend.c
+ */
+static void
+initialize_sort_functions(DecompressChunkState *chunk_state)
+{
+	// TODO
+	chunk_state->no_sortkeys = 0;
+
+	for (int i = 0; i < chunk_state->no_sortkeys; i++)
+	{
+		SortSupportData *sortKey = &chunk_state->sortkeys[i];
+
+		sortKey->ssup_cxt = CurrentMemoryContext;
+		// sortKey->ssup_collation = chunk_state->collations[i];
+		// sortKey->ssup_nulls_first = chunk_state->nullsFirst[i];
+		// sortKey->ssup_attno = chunk_state->sortColIdx[i];
+
+		/*
+		 * It isn't feasible to perform abbreviated key conversion, since
+		 * tuples are pulled into mergestate's binary heap as needed.  It
+		 * would likely be counter-productive to convert tuples into an
+		 * abbreviated representation as they're pulled up, so opt out of that
+		 * additional optimization entirely.
+		 */
+		sortKey->abbreviate = false;
+
+		// PrepareSortSupportFromOrderingOp(node->sortOperators[i], sortKey);
+	}
+}
 
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
@@ -436,12 +511,15 @@ decompress_chunk_exec(CustomScanState *node)
 	 */
 	if (chunk_state->segment_merge_append)
 	{
-		int i;
+		SlotNumber i;
 		ListCell *lc;
 
 		/* Create the heap on the first call. */
 		if (chunk_state->ms_heap == NULL)
 		{
+			/* Initialize the sort functions */
+			initialize_sort_functions(chunk_state);
+
 			/* Open and count all segments */
 			TupleTableSlot *subslot = NULL;
 			List *subslots = NIL;
