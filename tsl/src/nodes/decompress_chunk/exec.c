@@ -73,6 +73,7 @@ typedef struct DecompressSegmentState
 	TupleTableSlot *uncompressed_tuple_slot;
 	TupleTableSlot *segment_slot;
 	DecompressChunkColumnState *columns;
+	int counter;
 	MemoryContext per_batch_context;
 } DecompressSegmentState;
 
@@ -87,7 +88,6 @@ typedef struct DecompressChunkState
 	int hypertable_id;
 	Oid chunk_relid;
 	List *hypertable_compression_info;
-	int counter;
 
 	/* Per segment states */
 	int no_segment_states;					/* number of segment states */
@@ -106,6 +106,9 @@ static void decompress_chunk_explain(CustomScanState *node, List *ancestors, Exp
 static void decompress_chunk_create_tuple(DecompressChunkState *chunk_state,
 										  DecompressSegmentState *segment_state,
 										  TupleTableSlot *slot);
+static void decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
+											 DecompressSegmentState *segment_state,
+											 TupleTableSlot *slot);
 static void initialize_column_state(DecompressChunkState *chunk_state,
 									DecompressSegmentState *segment_state);
 
@@ -386,7 +389,7 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressSegmentState *segm
 				break;
 			case COUNT_COLUMN:
 				value = slot_getattr(slot, column->compressed_scan_attno, &isnull);
-				chunk_state->counter = DatumGetInt32(value);
+				segment_state->counter = DatumGetInt32(value);
 				/* count column should never be NULL */
 				Assert(!isnull);
 				break;
@@ -413,7 +416,6 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 }
 
 // TODO
-// * [ ] Read entire segments
 // * [ ] Implement compare function
 // * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order
 // * [ ] Improve cost model
@@ -485,9 +487,13 @@ decompress_chunk_exec(CustomScanState *node)
 				segment_state->uncompressed_tuple_slot =
 					MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
 
-				decompress_chunk_create_tuple(chunk_state,
-											  segment_state,
-											  segment_state->uncompressed_tuple_slot);
+				decompress_next_tuple_from_batch(chunk_state,
+												 segment_state,
+												 segment_state->uncompressed_tuple_slot);
+
+				// TODO: Check
+				Assert(!TupIsNull(segment_state->uncompressed_tuple_slot));
+
 				binaryheap_add_unordered(chunk_state->ms_heap, Int32GetDatum(i));
 				i++;
 			}
@@ -504,13 +510,17 @@ decompress_chunk_exec(CustomScanState *node)
 			i = DatumGetInt32(binaryheap_first(chunk_state->ms_heap));
 
 			/* Decompress the next tuple from segment */
-			// 		node->uncompressed_tuple_slot[i] = ExecProcNode(node->mergeplans[i]);
+			DecompressSegmentState *segment_state = &chunk_state->segment_states[i];
+
+			decompress_next_tuple_from_batch(chunk_state,
+											 segment_state,
+											 segment_state->uncompressed_tuple_slot);
 
 			/* Put the next tuple into the heap */
-			// if segment batch is exhausted
-			(void) binaryheap_remove_first(chunk_state->ms_heap);
-			// else
-			//	binaryheap_replace_first(node->ms_heap, Int32GetDatum(i));
+			if (TupIsNull(segment_state->uncompressed_tuple_slot))
+				(void) binaryheap_remove_first(chunk_state->ms_heap);
+			else
+				binaryheap_replace_first(chunk_state->ms_heap, Int32GetDatum(i));
 		}
 
 		/* All tuples are decompressed */
@@ -601,6 +611,91 @@ decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *e
 		ExplainPropertyBool("Per segment merge append", chunk_state->segment_merge_append, es);
 }
 
+static void
+decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
+								 DecompressSegmentState *segment_state, TupleTableSlot *slot)
+{
+	int i;
+	bool batch_done = false;
+
+	/* Clear old slot state */
+	ExecClearTuple(slot);
+
+	for (i = 0; i < chunk_state->num_columns; i++)
+	{
+		DecompressChunkColumnState *column = &segment_state->columns[i];
+		switch (column->type)
+		{
+			case COUNT_COLUMN:
+				if (segment_state->counter <= 0)
+					/*
+					 * we continue checking other columns even if counter
+					 * reaches zero to sanity check all columns are in sync
+					 * and agree about batch end
+					 */
+					batch_done = true;
+				else
+					segment_state->counter--;
+				break;
+			case COMPRESSED_COLUMN:
+			{
+				AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
+
+				if (!column->compressed.iterator)
+				{
+					slot->tts_values[attr] = getmissingattr(slot->tts_tupleDescriptor,
+															attr + 1,
+															&slot->tts_isnull[attr]);
+				}
+				else
+				{
+					DecompressResult result;
+					result = column->compressed.iterator->try_next(column->compressed.iterator);
+
+					if (result.is_done)
+					{
+						batch_done = true;
+						continue;
+					}
+					else if (batch_done)
+					{
+						/*
+						 * since the count column is the first column batch_done
+						 * might be true if compressed column is out of sync with
+						 * the batch counter.
+						 */
+						elog(ERROR, "compressed column out of sync with batch counter");
+					}
+
+					slot->tts_values[attr] = result.val;
+					slot->tts_isnull[attr] = result.is_null;
+				}
+
+				break;
+			}
+			case SEGMENTBY_COLUMN:
+			{
+				AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
+
+				slot->tts_values[attr] = column->segmentby.value;
+				slot->tts_isnull[attr] = column->segmentby.isnull;
+				break;
+			}
+			case SEQUENCE_NUM_COLUMN:
+				/*
+				 * nothing to do here for sequence number
+				 * we only needed this for sorting in node below
+				 */
+				break;
+		}
+	}
+
+	if (!batch_done)
+		ExecStoreVirtualTuple(slot);
+	else
+		ExecClearTuple(slot);
+}
+
 /*
  * Create generated tuple according to column chunk_state
  */
@@ -608,13 +703,8 @@ static void
 decompress_chunk_create_tuple(DecompressChunkState *chunk_state,
 							  DecompressSegmentState *segment_state, TupleTableSlot *slot)
 {
-	bool batch_done = false;
-	int i;
-
 	while (true)
 	{
-		ExecClearTuple(slot);
-
 		if (!chunk_state->initialized)
 		{
 			TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
@@ -622,87 +712,15 @@ decompress_chunk_create_tuple(DecompressChunkState *chunk_state,
 			if (TupIsNull(subslot))
 				return;
 
-			batch_done = false;
 			initialize_batch(chunk_state, segment_state, subslot);
 		}
 
-		for (i = 0; i < chunk_state->num_columns; i++)
-		{
-			DecompressChunkColumnState *column = &segment_state->columns[i];
-			switch (column->type)
-			{
-				case COUNT_COLUMN:
-					if (chunk_state->counter <= 0)
-						/*
-						 * we continue checking other columns even if counter
-						 * reaches zero to sanity check all columns are in sync
-						 * and agree about batch end
-						 */
-						batch_done = true;
-					else
-						chunk_state->counter--;
-					break;
-				case COMPRESSED_COLUMN:
-				{
-					AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
+		/* Decompress next tuple from batch */
+		decompress_next_tuple_from_batch(chunk_state, segment_state, slot);
 
-					if (!column->compressed.iterator)
-					{
-						slot->tts_values[attr] = getmissingattr(slot->tts_tupleDescriptor,
-																attr + 1,
-																&slot->tts_isnull[attr]);
-					}
-					else
-					{
-						DecompressResult result;
-						result = column->compressed.iterator->try_next(column->compressed.iterator);
+		if (!TupIsNull(slot))
+			return;
 
-						if (result.is_done)
-						{
-							batch_done = true;
-							continue;
-						}
-						else if (batch_done)
-						{
-							/*
-							 * since the count column is the first column batch_done
-							 * might be true if compressed column is out of sync with
-							 * the batch counter.
-							 */
-							elog(ERROR, "compressed column out of sync with batch counter");
-						}
-
-						slot->tts_values[attr] = result.val;
-						slot->tts_isnull[attr] = result.is_null;
-					}
-
-					break;
-				}
-				case SEGMENTBY_COLUMN:
-				{
-					AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
-
-					slot->tts_values[attr] = column->segmentby.value;
-					slot->tts_isnull[attr] = column->segmentby.isnull;
-					break;
-				}
-				case SEQUENCE_NUM_COLUMN:
-					/*
-					 * nothing to do here for sequence number
-					 * we only needed this for sorting in node below
-					 */
-					break;
-			}
-		}
-
-		if (batch_done)
-		{
-			chunk_state->initialized = false;
-			continue;
-		}
-
-		ExecStoreVirtualTuple(slot);
-
-		return;
+		chunk_state->initialized = false;
 	}
 }
