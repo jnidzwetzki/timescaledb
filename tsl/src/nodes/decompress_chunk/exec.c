@@ -68,14 +68,14 @@ typedef struct DecompressChunkColumnState
 	};
 } DecompressChunkColumnState;
 
-typedef struct DecompressSegmentState
+typedef struct DecompressBatchState
 {
 	TupleTableSlot *uncompressed_tuple_slot;
 	TupleTableSlot *segment_slot;
 	DecompressChunkColumnState *columns;
 	int counter;
 	MemoryContext per_batch_context;
-} DecompressSegmentState;
+} DecompressBatchState;
 
 typedef struct DecompressChunkState
 {
@@ -89,9 +89,9 @@ typedef struct DecompressChunkState
 	Oid chunk_relid;
 	List *hypertable_compression_info;
 
-	/* Per segment states */
-	int no_segment_states;					/* number of segment states */
-	DecompressSegmentState *segment_states; /* the segment states */
+	/* Per batch states */
+	int no_batch_states;				/* number of batch states */
+	DecompressBatchState *batch_states; /* the batch states */
 
 	bool segment_merge_append;	/* Merge append optimization. */
 	struct binaryheap *ms_heap; /* binary heap of slot indices */
@@ -104,13 +104,12 @@ static void decompress_chunk_end(CustomScanState *node);
 static void decompress_chunk_rescan(CustomScanState *node);
 static void decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 static void decompress_chunk_create_tuple(DecompressChunkState *chunk_state,
-										  DecompressSegmentState *segment_state,
-										  TupleTableSlot *slot);
+										  DecompressBatchState *batch_state, TupleTableSlot *slot);
 static void decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
-											 DecompressSegmentState *segment_state,
+											 DecompressBatchState *batch_state,
 											 TupleTableSlot *slot);
 static void initialize_column_state(DecompressChunkState *chunk_state,
-									DecompressSegmentState *segment_state);
+									DecompressBatchState *batch_state);
 
 static CustomExecMethods decompress_chunk_state_methods = {
 	.BeginCustomScan = decompress_chunk_begin,
@@ -144,19 +143,19 @@ decompress_chunk_state_create(CustomScan *cscan)
  * Create the states for the n segments
  */
 static void
-segment_states_create(DecompressChunkState *chunk_state, int nsegments)
+batch_states_create(DecompressChunkState *chunk_state, int nbatches)
 {
 	int segment;
 
-	Assert(nsegments > 0);
+	Assert(nbatches > 0);
 
-	chunk_state->no_segment_states = nsegments;
-	chunk_state->segment_states = palloc0(sizeof(DecompressSegmentState) * nsegments);
+	chunk_state->no_batch_states = nbatches;
+	chunk_state->batch_states = palloc0(sizeof(DecompressBatchState) * nbatches);
 
-	for (segment = 0; segment < nsegments; segment++)
+	for (segment = 0; segment < nbatches; segment++)
 	{
-		DecompressSegmentState *segment_state = &chunk_state->segment_states[segment];
-		initialize_column_state(chunk_state, segment_state);
+		DecompressBatchState *batch_state = &chunk_state->batch_states[segment];
+		initialize_column_state(chunk_state, batch_state);
 	}
 }
 
@@ -168,7 +167,7 @@ segment_states_create(DecompressChunkState *chunk_state, int nsegments)
  * that is the tuple layout we are creating
  */
 static void
-initialize_column_state(DecompressChunkState *chunk_state, DecompressSegmentState *segment_state)
+initialize_column_state(DecompressChunkState *chunk_state, DecompressBatchState *batch_state)
 {
 	ScanState *ss = (ScanState *) chunk_state;
 	TupleDesc desc = ss->ss_ScanTupleSlot->tts_tupleDescriptor;
@@ -179,11 +178,11 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressSegmentStat
 		elog(ERROR, "no columns specified to decompress");
 	}
 
-	segment_state->per_batch_context = AllocSetContextCreate(CurrentMemoryContext,
-															 "DecompressChunk per_batch",
-															 ALLOCSET_DEFAULT_SIZES);
+	batch_state->per_batch_context = AllocSetContextCreate(CurrentMemoryContext,
+														   "DecompressChunk per_batch",
+														   ALLOCSET_DEFAULT_SIZES);
 
-	segment_state->columns =
+	batch_state->columns =
 		palloc0(list_length(chunk_state->decompression_map) * sizeof(DecompressChunkColumnState));
 
 	AttrNumber next_compressed_scan_attno = 0;
@@ -199,7 +198,7 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressSegmentStat
 			continue;
 		}
 
-		DecompressChunkColumnState *column = &segment_state->columns[chunk_state->num_columns];
+		DecompressChunkColumnState *column = &batch_state->columns[chunk_state->num_columns];
 		chunk_state->num_columns++;
 
 		column->output_attno = output_attno;
@@ -344,19 +343,19 @@ decompress_chunk_begin(CustomScanState *node, EState *estate, int eflags)
 }
 
 static void
-initialize_batch(DecompressChunkState *chunk_state, DecompressSegmentState *segment_state,
+initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_state,
 				 TupleTableSlot *slot)
 {
 	Datum value;
 	bool isnull;
 	int i;
 
-	MemoryContext old_context = MemoryContextSwitchTo(segment_state->per_batch_context);
-	MemoryContextReset(segment_state->per_batch_context);
+	MemoryContext old_context = MemoryContextSwitchTo(batch_state->per_batch_context);
+	MemoryContextReset(batch_state->per_batch_context);
 
 	for (i = 0; i < chunk_state->num_columns; i++)
 	{
-		DecompressChunkColumnState *column = &segment_state->columns[i];
+		DecompressChunkColumnState *column = &batch_state->columns[i];
 
 		switch (column->type)
 		{
@@ -389,7 +388,7 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressSegmentState *segm
 				break;
 			case COUNT_COLUMN:
 				value = slot_getattr(slot, column->compressed_scan_attno, &isnull);
-				segment_state->counter = DatumGetInt32(value);
+				batch_state->counter = DatumGetInt32(value);
 				/* count column should never be NULL */
 				Assert(!isnull);
 				break;
@@ -440,8 +439,6 @@ decompress_chunk_exec(CustomScanState *node)
 		int i;
 		ListCell *lc;
 
-		elog(WARNING, "Use merge append optimization");
-
 		/* Create the heap on the first call. */
 		if (chunk_state->ms_heap == NULL)
 		{
@@ -463,36 +460,36 @@ decompress_chunk_exec(CustomScanState *node)
 				subslots = lappend(subslots, localsubslot);
 			}
 
-			int nsegments = list_length(subslots);
-			elog(WARNING, "We have seen %d number of child segments", nsegments);
+			int nbatches = list_length(subslots);
+			elog(WARNING, "We have seen %d number of child batches", nbatches);
 
-			segment_states_create(chunk_state, nsegments);
+			batch_states_create(chunk_state, nbatches);
 
-			chunk_state->ms_heap = binaryheap_allocate(nsegments, heap_compare_slots, chunk_state);
+			chunk_state->ms_heap = binaryheap_allocate(nbatches, heap_compare_slots, chunk_state);
 
 			/* Decompress top tuple of our segments and insert them into the heap */
 			i = 0;
 			foreach (lc, subslots)
 			{
-				Assert(i < chunk_state->no_segment_states);
-				DecompressSegmentState *segment_state = &chunk_state->segment_states[i];
+				Assert(i < chunk_state->no_batch_states);
+				DecompressBatchState *batch_state = &chunk_state->batch_states[i];
 
-				segment_state->segment_slot = (TupleTableSlot *) lfirst(lc);
-				Assert(!TupIsNull(segment_state->segment_slot));
+				batch_state->segment_slot = (TupleTableSlot *) lfirst(lc);
+				Assert(!TupIsNull(batch_state->segment_slot));
 
-				initialize_batch(chunk_state, segment_state, segment_state->segment_slot);
+				initialize_batch(chunk_state, batch_state, batch_state->segment_slot);
 
 				TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
 				TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
-				segment_state->uncompressed_tuple_slot =
+				batch_state->uncompressed_tuple_slot =
 					MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
 
 				decompress_next_tuple_from_batch(chunk_state,
-												 segment_state,
-												 segment_state->uncompressed_tuple_slot);
+												 batch_state,
+												 batch_state->uncompressed_tuple_slot);
 
 				// TODO: Check
-				Assert(!TupIsNull(segment_state->uncompressed_tuple_slot));
+				Assert(!TupIsNull(batch_state->uncompressed_tuple_slot));
 
 				binaryheap_add_unordered(chunk_state->ms_heap, Int32GetDatum(i));
 				i++;
@@ -510,14 +507,14 @@ decompress_chunk_exec(CustomScanState *node)
 			i = DatumGetInt32(binaryheap_first(chunk_state->ms_heap));
 
 			/* Decompress the next tuple from segment */
-			DecompressSegmentState *segment_state = &chunk_state->segment_states[i];
+			DecompressBatchState *batch_state = &chunk_state->batch_states[i];
 
 			decompress_next_tuple_from_batch(chunk_state,
-											 segment_state,
-											 segment_state->uncompressed_tuple_slot);
+											 batch_state,
+											 batch_state->uncompressed_tuple_slot);
 
 			/* Put the next tuple into the heap */
-			if (TupIsNull(segment_state->uncompressed_tuple_slot))
+			if (TupIsNull(batch_state->uncompressed_tuple_slot))
 				(void) binaryheap_remove_first(chunk_state->ms_heap);
 			else
 				binaryheap_replace_first(chunk_state->ms_heap, Int32GetDatum(i));
@@ -532,21 +529,21 @@ decompress_chunk_exec(CustomScanState *node)
 		Assert(i >= 0);
 
 		/* Fetch tuple from slot */
-		TupleTableSlot *result = chunk_state->segment_states[i].uncompressed_tuple_slot;
+		TupleTableSlot *result = chunk_state->batch_states[i].uncompressed_tuple_slot;
 		Assert(result != NULL);
 
 		return result;
 	}
 	else
 	{
-		if (chunk_state->segment_states == NULL)
-			segment_states_create(chunk_state, 1);
+		if (chunk_state->batch_states == NULL)
+			batch_states_create(chunk_state, 1);
 
 		while (true)
 		{
-			DecompressSegmentState *segment_state = &chunk_state->segment_states[0];
+			DecompressBatchState *batch_state = &chunk_state->batch_states[0];
 			TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
-			decompress_chunk_create_tuple(chunk_state, segment_state, slot);
+			decompress_chunk_create_tuple(chunk_state, batch_state, slot);
 
 			if (TupIsNull(slot))
 				return NULL;
@@ -585,15 +582,15 @@ decompress_chunk_end(CustomScanState *node)
 	int i;
 	DecompressChunkState *chunk_state = (DecompressChunkState *) node;
 
-	for (i = 0; i < chunk_state->no_segment_states; i++)
+	for (i = 0; i < chunk_state->no_batch_states; i++)
 	{
-		DecompressSegmentState *segment_state = &chunk_state->segment_states[i];
+		DecompressBatchState *batch_state = &chunk_state->batch_states[i];
 
-		if (segment_state->segment_slot)
-			ExecDropSingleTupleTableSlot(segment_state->segment_slot);
+		if (batch_state->segment_slot)
+			ExecDropSingleTupleTableSlot(batch_state->segment_slot);
 
-		if (segment_state->uncompressed_tuple_slot)
-			ExecDropSingleTupleTableSlot(segment_state->uncompressed_tuple_slot);
+		if (batch_state->uncompressed_tuple_slot)
+			ExecDropSingleTupleTableSlot(batch_state->uncompressed_tuple_slot);
 	}
 
 	ExecEndNode(linitial(node->custom_ps));
@@ -613,7 +610,7 @@ decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *e
 
 static void
 decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
-								 DecompressSegmentState *segment_state, TupleTableSlot *slot)
+								 DecompressBatchState *batch_state, TupleTableSlot *slot)
 {
 	int i;
 	bool batch_done = false;
@@ -623,11 +620,11 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 
 	for (i = 0; i < chunk_state->num_columns; i++)
 	{
-		DecompressChunkColumnState *column = &segment_state->columns[i];
+		DecompressChunkColumnState *column = &batch_state->columns[i];
 		switch (column->type)
 		{
 			case COUNT_COLUMN:
-				if (segment_state->counter <= 0)
+				if (batch_state->counter <= 0)
 					/*
 					 * we continue checking other columns even if counter
 					 * reaches zero to sanity check all columns are in sync
@@ -635,7 +632,7 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 					 */
 					batch_done = true;
 				else
-					segment_state->counter--;
+					batch_state->counter--;
 				break;
 			case COMPRESSED_COLUMN:
 			{
@@ -700,8 +697,8 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
  * Create generated tuple according to column chunk_state
  */
 static void
-decompress_chunk_create_tuple(DecompressChunkState *chunk_state,
-							  DecompressSegmentState *segment_state, TupleTableSlot *slot)
+decompress_chunk_create_tuple(DecompressChunkState *chunk_state, DecompressBatchState *batch_state,
+							  TupleTableSlot *slot)
 {
 	while (true)
 	{
@@ -712,11 +709,11 @@ decompress_chunk_create_tuple(DecompressChunkState *chunk_state,
 			if (TupIsNull(subslot))
 				return;
 
-			initialize_batch(chunk_state, segment_state, subslot);
+			initialize_batch(chunk_state, batch_state, subslot);
 		}
 
 		/* Decompress next tuple from batch */
-		decompress_next_tuple_from_batch(chunk_state, segment_state, slot);
+		decompress_next_tuple_from_batch(chunk_state, batch_state, slot);
 
 		if (!TupIsNull(slot))
 			return;
