@@ -469,11 +469,59 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 
 	Assert(list_length(custom_plans) == 1);
 
-	settings = list_make4_int(dcpath->info->hypertable_id,
+	/* Build heap sort info for segment_merge_append */
+	int numsortkeys = 0;
+	SortSupportData *sortkeys = NULL;
+
+	if (dcpath->segment_merge_append)
+	{
+		AttrNumber *sortColIdx = NULL;
+		Oid *sortOperators = NULL;
+		Oid *collations = NULL;
+		bool *nullsFirst = NULL;
+
+		ts_prepare_sort_from_pathkeys(&decompress_plan->scan.plan,
+									  dcpath->cpath.path.pathkeys,
+									  bms_make_singleton(dcpath->info->chunk_rel->relid),
+									  NULL,
+									  false,
+									  &numsortkeys,
+									  &sortColIdx,
+									  &sortOperators,
+									  &collations,
+									  &nullsFirst);
+
+		sortkeys = palloc0(sizeof(SortSupportData) * numsortkeys);
+
+		/* Inspired by nodeMergeAppend.c */
+		for (int i = 0; i < numsortkeys; i++)
+		{
+			SortSupportData *sortKey = &sortkeys[i];
+
+			sortKey->ssup_cxt = CurrentMemoryContext;
+			sortKey->ssup_collation = collations[i];
+			sortKey->ssup_nulls_first = nullsFirst[i];
+			sortKey->ssup_attno = sortColIdx[i];
+
+			/*
+			 * It isn't feasible to perform abbreviated key conversion, since
+			 * tuples are pulled into mergestate's binary heap as needed.  It
+			 * would likely be counter-productive to convert tuples into an
+			 * abbreviated representation as they're pulled up, so opt out of that
+			 * additional optimization entirely.
+			 */
+			sortKey->abbreviate = false;
+
+			PrepareSortSupportFromOrderingOp(sortOperators[i], sortKey);
+		}
+	}
+
+	settings = list_make5_int(dcpath->info->hypertable_id,
 							  dcpath->info->chunk_rte->relid,
 							  dcpath->reverse,
-							  dcpath->segment_merge_append);
-	decompress_plan->custom_private = list_make2(settings, dcpath->decompression_map);
+							  dcpath->segment_merge_append,
+							  numsortkeys);
+	decompress_plan->custom_private = list_make3(settings, dcpath->decompression_map, sortkeys);
 
 	return &decompress_plan->scan.plan;
 }

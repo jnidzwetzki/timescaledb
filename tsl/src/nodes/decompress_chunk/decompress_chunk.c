@@ -610,7 +610,6 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 		if (is_able_to_use_segment_merge_append(root, info, chunk))
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
-			pathkeys_contained_in(sort_info.compressed_pathkeys, child_path->pathkeys);
 
 			dcpath->segment_merge_append = true;
 			// dcpath->cpath.path.startup_cost=child_path->rows * 0.1; // TODO

@@ -142,11 +142,20 @@ decompress_chunk_state_create(CustomScan *cscan)
 	chunk_state->csstate.methods = &decompress_chunk_state_methods;
 
 	settings = linitial(cscan->custom_private);
+	Assert(list_length(settings) == 5);
+
 	chunk_state->hypertable_id = linitial_int(settings);
 	chunk_state->chunk_relid = lsecond_int(settings);
 	chunk_state->reverse = lthird_int(settings);
 	chunk_state->segment_merge_append = lfourth_int(settings);
+	chunk_state->no_sortkeys = llast_int(settings);
+
 	chunk_state->decompression_map = lsecond(cscan->custom_private);
+	chunk_state->sortkeys = lthird(cscan->custom_private);
+
+	/* Sort keys should only be present when segment_merge_append is used*/
+	Assert(chunk_state->segment_merge_append == true || chunk_state->no_sortkeys == 0);
+	Assert(chunk_state->no_sortkeys == 0 || chunk_state->sortkeys != NULL);
 
 	return (Node *) chunk_state;
 }
@@ -417,7 +426,7 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 }
 
 /*
- * Compare the tuples in the two given slots.
+ * Compare the tuples of two given slots.
  */
 static int32
 heap_compare_slots(Datum a, Datum b, void *arg)
@@ -459,42 +468,10 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 }
 
 // TODO
-// * [ ] Implement compare function
-// * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order
+// * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order and what is about the HT partitioning?
 // * [ ] Improve cost model
 // * [ ] Write/Enhance test cases
-// * [ ] Optional: Optimize multiple batches per segment via hashmap
-
-/*
- * Inspired by nodeMergeAppend.c
- */
-static void
-initialize_sort_functions(DecompressChunkState *chunk_state)
-{
-	// TODO
-	chunk_state->no_sortkeys = 0;
-
-	for (int i = 0; i < chunk_state->no_sortkeys; i++)
-	{
-		SortSupportData *sortKey = &chunk_state->sortkeys[i];
-
-		sortKey->ssup_cxt = CurrentMemoryContext;
-		// sortKey->ssup_collation = chunk_state->collations[i];
-		// sortKey->ssup_nulls_first = chunk_state->nullsFirst[i];
-		// sortKey->ssup_attno = chunk_state->sortColIdx[i];
-
-		/*
-		 * It isn't feasible to perform abbreviated key conversion, since
-		 * tuples are pulled into mergestate's binary heap as needed.  It
-		 * would likely be counter-productive to convert tuples into an
-		 * abbreviated representation as they're pulled up, so opt out of that
-		 * additional optimization entirely.
-		 */
-		sortKey->abbreviate = false;
-
-		// PrepareSortSupportFromOrderingOp(node->sortOperators[i], sortKey);
-	}
-}
+// * [ ] Optional: Optimize multiple batches per segment
 
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
@@ -517,9 +494,6 @@ decompress_chunk_exec(CustomScanState *node)
 		/* Create the heap on the first call. */
 		if (chunk_state->ms_heap == NULL)
 		{
-			/* Initialize the sort functions */
-			initialize_sort_functions(chunk_state);
-
 			/* Open and count all segments */
 			TupleTableSlot *subslot = NULL;
 			List *subslots = NIL;
