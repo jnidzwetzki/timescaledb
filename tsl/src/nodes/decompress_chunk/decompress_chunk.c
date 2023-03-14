@@ -612,16 +612,27 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 
 			dcpath->segment_merge_append = true;
-			// dcpath->cpath.path.startup_cost=child_path->rows * 0.1; // TODO
-			// dcpath->cpath.path.total_cost=child_path->rows * 0.15;  // TODO
-			dcpath->cpath.path.startup_cost = 0.001;
-			dcpath->cpath.path.total_cost = 0.0015;
 
 			/* The segment by optimization is only enabled if it can deliver the tuples in the
 			 * same order as the query requested it. So, we can just copy the pathkeys of the
 			 * query here.
 			 */
 			dcpath->cpath.path.pathkeys = root->query_pathkeys;
+
+			/*
+			 * Using the optimization, we have to fetch the top tuples for each segment first. So,
+			 * the startup costs are higher than without the optimization. Because we have to
+			 * prepare each segment first, we have startup costs of "number of segments" * "segment
+			 * startup costs".
+			 *
+			 * We don't adjust the total costs and reuse them from the copied unoptimized decompress
+			 * chunk path.
+			 *
+			 * Because our path will deliver the tuples with the pathkeys of the query, this path
+			 * should be preferred over a path that don't uses this optimization and delivers the
+			 * tuples with different pathkeys.
+			 */
+			dcpath->cpath.path.startup_cost = dcpath->cpath.path.startup_cost * child_path->rows;
 
 			add_path(chunk_rel, &dcpath->cpath.path);
 		}

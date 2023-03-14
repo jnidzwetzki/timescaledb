@@ -475,6 +475,10 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 
 	if (dcpath->segment_merge_append)
 	{
+		/* If the 'order by' of the query and the 'order by' of the segments do match,
+		 * we use a heap to merge the segments. For the heap we need a compare function
+		 * that determines the heap order. This function will be constructed here.
+		 */
 		AttrNumber *sortColIdx = NULL;
 		Oid *sortOperators = NULL;
 		Oid *collations = NULL;

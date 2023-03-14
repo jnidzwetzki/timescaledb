@@ -468,10 +468,10 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 }
 
 // TODO
-// * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order and what is about the HT partitioning?
-// * [ ] Improve cost model
+// * [ ] Optimize multiple batches per segment
+// * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order and
+// what is about the HT partitioning?
 // * [ ] Write/Enhance test cases
-// * [ ] Optional: Optimize multiple batches per segment
 
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
