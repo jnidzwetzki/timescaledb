@@ -40,6 +40,10 @@ ts_prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys, Relids relids,
 							  Oid **p_collations, bool **p_nullsFirst);
 
 extern TSDLLEXPORT Sort *ts_make_sort_from_pathkeys(Plan *lefttree, List *pathkeys, Relids relids);
+
+extern TSDLLEXPORT Sort *ts_make_sort(Plan *lefttree, int numCols, AttrNumber *sortColIdx,
+									  Oid *sortOperators, Oid *collations, bool *nullsFirst);
+
 extern TSDLLEXPORT PathKey *ts_make_pathkey_from_sortop(PlannerInfo *root, Expr *expr,
 														Relids nullable_relids, Oid ordering_op,
 														bool nulls_first, Index sortref,

@@ -451,33 +451,16 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 	 */
 	build_decompression_map(dcpath, compressed_scan->plan.targetlist, chunk_attrs_needed);
 
-	/*
-	 * Add a sort if the compressed scan is not ordered appropriately.
-	 */
-	if (!pathkeys_contained_in(dcpath->compressed_pathkeys, compressed_path->pathkeys))
-	{
-		List *compressed_pks = dcpath->compressed_pathkeys;
-		Sort *sort = ts_make_sort_from_pathkeys((Plan *) compressed_scan,
-												compressed_pks,
-												bms_make_singleton(compressed_scan->scanrelid));
-		decompress_plan->custom_plans = list_make1(sort);
-	}
-	else
-	{
-		decompress_plan->custom_plans = custom_plans;
-	}
-
-	Assert(list_length(custom_plans) == 1);
-
 	/* Build heap sort info for segment_merge_append */
 	int numsortkeys = 0;
 	SortSupportData *sortkeys = NULL;
 
 	if (dcpath->segment_merge_append)
 	{
-		/* If the 'order by' of the query and the 'order by' of the segments do match,
-		 * we use a heap to merge the segments. For the heap we need a compare function
-		 * that determines the heap order. This function will be constructed here.
+		/* segment_merge_append is used when the 'order by' of the query and the
+		 * 'order by' of the segments do match, we use a heap to merge the segments.
+		 * For the heap we need a compare function that determines the heap order. This
+		 * function is constructed here.
 		 */
 		AttrNumber *sortColIdx = NULL;
 		Oid *sortOperators = NULL;
@@ -518,7 +501,57 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 
 			PrepareSortSupportFromOrderingOp(sortOperators[i], sortKey);
 		}
+
+		/* Build a sort node for the segments */
+		for (int i = 0; i < numsortkeys; i++)
+		{
+			Oid opfamily, opcintype;
+			int16 strategy;
+
+			/* Find the operator in pg_amop --- failure shouldn't happen */
+			if (!get_ordering_op_properties(sortOperators[i], &opfamily, &opcintype, &strategy))
+				elog(ERROR, "operator %u is not a valid ordering operator", sortOperators[i]);
+
+			Assert(strategy == BTLessStrategyNumber || strategy == BTGreaterStrategyNumber);
+			char *meta_col_name = strategy == BTLessStrategyNumber ?
+									  column_segment_min_name(i + 1) :
+									  column_segment_max_name(i + 1);
+			sortColIdx[i] = get_attnum(dcpath->info->compressed_rte->relid, meta_col_name);
+
+			if (sortColIdx[i] == InvalidAttrNumber)
+				elog(ERROR, "couldn't find metadata column \"%s\"", meta_col_name);
+		}
+
+		/* Now build the segment sort node */
+		Sort *sort = ts_make_sort((Plan *) compressed_scan,
+								  numsortkeys,
+								  sortColIdx,
+								  sortOperators,
+								  collations,
+								  nullsFirst);
+
+		decompress_plan->custom_plans = list_make1(sort);
 	}
+	else
+	{
+		/*
+		 * Add a sort if the compressed scan is not ordered appropriately.
+		 */
+		if (!pathkeys_contained_in(dcpath->compressed_pathkeys, compressed_path->pathkeys))
+		{
+			List *compressed_pks = dcpath->compressed_pathkeys;
+			Sort *sort = ts_make_sort_from_pathkeys((Plan *) compressed_scan,
+													compressed_pks,
+													bms_make_singleton(compressed_scan->scanrelid));
+			decompress_plan->custom_plans = list_make1(sort);
+		}
+		else
+		{
+			decompress_plan->custom_plans = custom_plans;
+		}
+	}
+
+	Assert(list_length(custom_plans) == 1);
 
 	settings = list_make5_int(dcpath->info->hypertable_id,
 							  dcpath->info->chunk_rte->relid,
