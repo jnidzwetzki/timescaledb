@@ -469,9 +469,28 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 
 // TODO
 // * [ ] Optimize multiple batches per segment
-// * [ ] Test if segment by asc / desc check is needed or if the data can be read in that order and
-// what is about the HT partitioning?
+// * [ ] what is about the HT partitioning?
 // * [ ] Write/Enhance test cases
+
+/* Add a new datum to the heap. In contrast to the
+ * binaryheap_add_unordered() function, the capacity
+ * of the heap is automatically increased if needed.
+ */
+static pg_nodiscard binaryheap *
+add_to_binary_heap_autoresize(binaryheap *heap, Datum d)
+{
+	/* Resize if needed */
+	if (heap->bh_size >= heap->bh_space)
+	{
+		heap->bh_space = heap->bh_space * 2;
+		Size new_size = offsetof(binaryheap, bh_nodes) + sizeof(Datum) * heap->bh_space;
+		heap = (binaryheap *) repalloc(heap, new_size);
+	}
+
+	binaryheap_add_unordered(heap, d);
+
+	return heap;
+}
 
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
@@ -498,6 +517,9 @@ decompress_chunk_exec(CustomScanState *node)
 			TupleTableSlot *subslot = NULL;
 			List *subslots = NIL;
 
+			chunk_state->ms_heap =
+				binaryheap_allocate(BINARY_HEAP_DEFAULT_CAPACITY, heap_compare_slots, chunk_state);
+
 			while (true)
 			{
 				subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
@@ -516,8 +538,6 @@ decompress_chunk_exec(CustomScanState *node)
 			elog(WARNING, "We have seen %d number of child batches", nbatches);
 
 			batch_states_create(chunk_state, nbatches);
-
-			chunk_state->ms_heap = binaryheap_allocate(nbatches, heap_compare_slots, chunk_state);
 
 			/* Decompress top tuple of our segments and insert them into the heap */
 			i = 0;
@@ -540,12 +560,12 @@ decompress_chunk_exec(CustomScanState *node)
 												 batch_state,
 												 batch_state->uncompressed_tuple_slot);
 
-				// TODO: Check
 				Assert(!TupIsNull(batch_state->uncompressed_tuple_slot));
-
-				binaryheap_add_unordered(chunk_state->ms_heap, Int32GetDatum(i));
+				chunk_state->ms_heap =
+					add_to_binary_heap_autoresize(chunk_state->ms_heap, Int32GetDatum(i));
 				i++;
 			}
+			elog(WARNING, "Heap has capacity of %d", chunk_state->ms_heap->bh_space);
 
 			binaryheap_build(chunk_state->ms_heap);
 		}

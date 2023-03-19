@@ -12,6 +12,9 @@
 #define DECOMPRESS_CHUNK_COUNT_ID -9
 #define DECOMPRESS_CHUNK_SEQUENCE_NUM_ID -10
 
+/* The initial capacity of the binary heap */
+#define BINARY_HEAP_DEFAULT_CAPACITY 16
+
 extern Node *decompress_chunk_state_create(CustomScan *cscan);
 
 #endif /* TIMESCALEDB_DECOMPRESS_CHUNK_EXEC_H */
