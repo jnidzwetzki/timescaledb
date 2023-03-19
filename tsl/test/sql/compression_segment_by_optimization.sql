@@ -37,6 +37,14 @@ SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC;
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x3, x4;
 
+-- Should be optimized (duplicate order by attributes)
+:PREFIX
+SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x3, x3;
+
+-- Should be optimized (duplicate order by attributes)
+:PREFIX
+SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x3, x4, x3, x4;
+
 -- Should not be optimized 
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x4, x3;

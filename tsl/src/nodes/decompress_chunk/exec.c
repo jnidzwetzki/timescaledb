@@ -168,7 +168,7 @@ batch_states_create(DecompressChunkState *chunk_state, int nbatches)
 {
 	int segment;
 
-	Assert(nbatches > 0);
+	Assert(nbatches >= 0);
 
 	chunk_state->no_batch_states = nbatches;
 	chunk_state->batch_states = palloc0(sizeof(DecompressBatchState) * nbatches);
