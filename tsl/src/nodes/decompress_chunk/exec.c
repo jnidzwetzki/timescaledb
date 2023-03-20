@@ -91,6 +91,7 @@ typedef struct DecompressChunkState
 
 	/* Per batch states */
 	int no_batch_states;				/* number of batch states */
+	int batch_with_top_value;			/* the batch state with the top value */
 	DecompressBatchState *batch_states; /* the batch states */
 	Bitmapset *unused_batch_states;		/* the unused batch states */
 
@@ -110,6 +111,7 @@ typedef struct DecompressChunkState
  * type-safety, but it makes the code more self-documenting.
  */
 typedef int32 SlotNumber;
+#define INVALID_BATCH_ID -1
 
 static TupleTableSlot *decompress_chunk_exec(CustomScanState *node);
 static void decompress_chunk_begin(CustomScanState *node, EState *estate, int eflags);
@@ -524,7 +526,7 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 
 // TODO
 // * [ ] Optimize multiple batches per segment
-// * [ ] what is about the HT partitioning?
+// * [ ] what is about the HT partitioning? And reverse?
 // * [ ] Write/Enhance test cases
 
 /* Add a new datum to the heap. In contrast to the
@@ -543,44 +545,48 @@ add_to_binary_heap_autoresize(binaryheap *heap, Datum d)
 	}
 
 	/* Insert new element */
-	binaryheap_add_unordered(heap, d);
+	binaryheap_add(heap, d);
 
 	return heap;
 }
 
-static void
-decompress_next_tuple(DecompressChunkState *chunk_state)
+static bool
+open_next_batch(DecompressChunkState *chunk_state)
 {
-	while (true)
+	TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
+
+	if (TupIsNull(subslot))
 	{
-		TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
-
-		if (TupIsNull(subslot))
-			break;
-
-		SlotNumber batch_state_id = get_next_unused_batch_state_id(chunk_state);
-		DecompressBatchState *batch_state = &chunk_state->batch_states[batch_state_id];
-
-		TupleDesc tdesc_sub = CreateTupleDescCopy(subslot->tts_tupleDescriptor);
-		batch_state->batch_slot = MakeSingleTupleTableSlot(tdesc_sub, subslot->tts_ops);
-		ExecCopySlot(batch_state->batch_slot, subslot);
-
-		Assert(!TupIsNull(batch_state->batch_slot));
-		initialize_batch(chunk_state, batch_state, batch_state->batch_slot);
-
-		TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
-		TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
-		batch_state->next_uncompressed_tuple_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
-
-		decompress_next_tuple_from_batch(chunk_state,
-										 batch_state,
-										 batch_state->next_uncompressed_tuple_slot);
-
-		Assert(!TupIsNull(batch_state->next_uncompressed_tuple_slot));
-
-		chunk_state->merge_heap =
-			add_to_binary_heap_autoresize(chunk_state->merge_heap, Int32GetDatum(batch_state_id));
+		chunk_state->batch_with_top_value = INVALID_BATCH_ID;
+		return false;
 	}
+
+	SlotNumber batch_state_id = get_next_unused_batch_state_id(chunk_state);
+	DecompressBatchState *batch_state = &chunk_state->batch_states[batch_state_id];
+
+	TupleDesc tdesc_sub = CreateTupleDescCopy(subslot->tts_tupleDescriptor);
+	batch_state->batch_slot = MakeSingleTupleTableSlot(tdesc_sub, subslot->tts_ops);
+	ExecCopySlot(batch_state->batch_slot, subslot);
+
+	Assert(!TupIsNull(batch_state->batch_slot));
+	initialize_batch(chunk_state, batch_state, batch_state->batch_slot);
+
+	TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
+	TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
+	batch_state->next_uncompressed_tuple_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
+
+	decompress_next_tuple_from_batch(chunk_state,
+									 batch_state,
+									 batch_state->next_uncompressed_tuple_slot);
+
+	Assert(!TupIsNull(batch_state->next_uncompressed_tuple_slot));
+
+	chunk_state->merge_heap =
+		add_to_binary_heap_autoresize(chunk_state->merge_heap, Int32GetDatum(batch_state_id));
+
+	chunk_state->batch_with_top_value = batch_state_id;
+
+	return true;
 }
 
 static TupleTableSlot *
@@ -606,9 +612,8 @@ decompress_chunk_exec(CustomScanState *node)
 				binaryheap_allocate(BINARY_HEAP_DEFAULT_CAPACITY, heap_compare_slots, chunk_state);
 			batch_states_create(chunk_state, INITAL_BATCH_CAPACITY);
 
-			decompress_next_tuple(chunk_state);
-
-			binaryheap_build(chunk_state->merge_heap);
+			/* Open the first batch */
+			open_next_batch(chunk_state);
 		}
 		else
 		{
@@ -642,12 +647,17 @@ decompress_chunk_exec(CustomScanState *node)
 		if (binaryheap_empty(chunk_state->merge_heap))
 			return NULL;
 
-		/* Return the next tuple from our heap. */
-		SlotNumber i = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
-		Assert(i >= 0);
+		/* If the next tuple is from the top batch, open follow-up bathces. */
+		while (DatumGetInt32(binaryheap_first(chunk_state->merge_heap)) ==
+			   chunk_state->batch_with_top_value)
+		{
+			open_next_batch(chunk_state);
+		}
 
 		/* Fetch tuple from slot */
-		TupleTableSlot *result = chunk_state->batch_states[i].next_uncompressed_tuple_slot;
+		SlotNumber slot_number = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
+		TupleTableSlot *result =
+			chunk_state->batch_states[slot_number].next_uncompressed_tuple_slot;
 		Assert(result != NULL);
 
 		return result;
