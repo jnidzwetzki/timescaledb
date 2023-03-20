@@ -31,8 +31,8 @@ SELECT compress_chunk(c.schema_name|| '.' || c.table_name) FROM _timescaledb_cat
 -- Should be optimized 
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC;
-WARNING:  We have seen 0 number of child batches
 WARNING:  Heap has capacity of 16
+WARNING:  Created batch states 16
                                                                                                                                                                                                                                                                       QUERY PLAN                                                                                                                                                                                                                                                                       
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Custom Scan (DecompressChunk) on _timescaledb_internal._hyper_1_1_chunk (actual rows=0 loops=1)
@@ -52,8 +52,8 @@ WARNING:  Heap has capacity of 16
 -- Should be optimized 
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x3, x4;
-WARNING:  We have seen 0 number of child batches
 WARNING:  Heap has capacity of 16
+WARNING:  Created batch states 16
                                                                                                                                                                                                                                                                       QUERY PLAN                                                                                                                                                                                                                                                                       
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Custom Scan (DecompressChunk) on _timescaledb_internal._hyper_1_1_chunk (actual rows=0 loops=1)
@@ -73,8 +73,8 @@ WARNING:  Heap has capacity of 16
 -- Should be optimized (duplicate order by attributes)
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x3, x3;
-WARNING:  We have seen 0 number of child batches
 WARNING:  Heap has capacity of 16
+WARNING:  Created batch states 16
                                                                                                                                                                                                                                                                       QUERY PLAN                                                                                                                                                                                                                                                                       
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Custom Scan (DecompressChunk) on _timescaledb_internal._hyper_1_1_chunk (actual rows=0 loops=1)
@@ -94,8 +94,8 @@ WARNING:  Heap has capacity of 16
 -- Should be optimized (duplicate order by attributes)
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x3, x4, x3, x4;
-WARNING:  We have seen 0 number of child batches
 WARNING:  Heap has capacity of 16
+WARNING:  Created batch states 16
                                                                                                                                                                                                                                                                       QUERY PLAN                                                                                                                                                                                                                                                                       
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Custom Scan (DecompressChunk) on _timescaledb_internal._hyper_1_1_chunk (actual rows=0 loops=1)

@@ -15,6 +15,9 @@
 /* The initial capacity of the binary heap */
 #define BINARY_HEAP_DEFAULT_CAPACITY 16
 
+/* Initial amount of batch states */
+#define INITAL_BATCH_CAPACITY 16
+
 extern Node *decompress_chunk_state_create(CustomScan *cscan);
 
 #endif /* TIMESCALEDB_DECOMPRESS_CHUNK_EXEC_H */

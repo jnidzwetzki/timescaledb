@@ -92,11 +92,12 @@ typedef struct DecompressChunkState
 	/* Per batch states */
 	int no_batch_states;				/* number of batch states */
 	DecompressBatchState *batch_states; /* the batch states */
+	Bitmapset *unused_batch_states;		/* the unused batch states */
 
-	bool segment_merge_append;	/* Merge append optimization */
-	struct binaryheap *ms_heap; /* binary heap of slot indices */
+	bool segment_merge_append;	   /* Merge append optimization */
+	struct binaryheap *merge_heap; /* binary heap of slot indices */
 
-	/* Sort keys for merge append */
+	/* Sort keys for heap merge function */
 	int no_sortkeys;
 	SortSupportData *sortkeys;
 } DecompressChunkState;
@@ -161,23 +162,78 @@ decompress_chunk_state_create(CustomScan *cscan)
 }
 
 /*
- * Create the states for the n segments
+ * Create states to hold up to n batches
  */
 static void
 batch_states_create(DecompressChunkState *chunk_state, int nbatches)
 {
-	int segment;
-
 	Assert(nbatches >= 0);
 
 	chunk_state->no_batch_states = nbatches;
 	chunk_state->batch_states = palloc0(sizeof(DecompressBatchState) * nbatches);
 
-	for (segment = 0; segment < nbatches; segment++)
+	for (int segment = 0; segment < nbatches; segment++)
 	{
 		DecompressBatchState *batch_state = &chunk_state->batch_states[segment];
 		initialize_column_state(chunk_state, batch_state);
 	}
+
+	chunk_state->unused_batch_states =
+		bms_add_range(chunk_state->unused_batch_states, 0, nbatches - 1);
+}
+
+/*
+ * Enhance the capacity of parallel open batches
+ */
+static void
+batch_states_enlarge(DecompressChunkState *chunk_state, int nbatches)
+{
+	Assert(nbatches > chunk_state->no_batch_states);
+	chunk_state->batch_states =
+		(DecompressBatchState *) repalloc(chunk_state->batch_states,
+										  sizeof(DecompressBatchState) * nbatches);
+
+	/* Init new batch states */
+	for (int segment = chunk_state->no_batch_states; segment < nbatches; segment++)
+	{
+		DecompressBatchState *batch_state = &chunk_state->batch_states[segment];
+		initialize_column_state(chunk_state, batch_state);
+	}
+
+	chunk_state->unused_batch_states =
+		bms_add_range(chunk_state->unused_batch_states, chunk_state->no_batch_states, nbatches - 1);
+	chunk_state->no_batch_states = nbatches;
+}
+
+/*
+ * Mark a DecompressBatchState as unused
+ */
+/*static void
+set_batch_state_to_unused(DecompressChunkState *chunk_state, int batch_id)
+{
+	Assert(batch_id < chunk_state->no_batch_states);
+	Assert(! bms_is_member(batch_id, chunk_state -> unused_batch_states));
+	chunk_state -> unused_batch_states = bms_add_member(chunk_state -> unused_batch_states,
+batch_id);
+}*/
+
+/*
+ * Get the next free and unused batch state and mark as used
+ */
+static SlotNumber
+get_next_unused_batch_state_id(DecompressChunkState *chunk_state)
+{
+	if (bms_is_empty(chunk_state->unused_batch_states))
+		batch_states_enlarge(chunk_state, chunk_state->no_batch_states + INITAL_BATCH_CAPACITY);
+
+	Assert(!bms_is_empty(chunk_state->unused_batch_states));
+
+	SlotNumber next_free_batch = bms_next_member(chunk_state->unused_batch_states, -1);
+	Assert(next_free_batch >= 0);
+
+	bms_del_member(chunk_state->unused_batch_states, next_free_batch);
+
+	return next_free_batch;
 }
 
 /*
@@ -479,7 +535,7 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 static pg_nodiscard binaryheap *
 add_to_binary_heap_autoresize(binaryheap *heap, Datum d)
 {
-	/* Resize if needed */
+	/* Resize heap if needed */
 	if (heap->bh_size >= heap->bh_space)
 	{
 		heap->bh_space = heap->bh_space * 2;
@@ -487,6 +543,7 @@ add_to_binary_heap_autoresize(binaryheap *heap, Datum d)
 		heap = (binaryheap *) repalloc(heap, new_size);
 	}
 
+	/* Insert new element */
 	binaryheap_add_unordered(heap, d);
 
 	return heap;
@@ -501,54 +558,35 @@ decompress_chunk_exec(CustomScanState *node)
 	if (node->custom_ps == NIL)
 		return NULL;
 
-	/* Are we going to merge the segments or do we decompress
-	 * the tuples directly. Based on the nodeMergeAppend code
-	 * of PostgreSQL.
+	/* If the segment_merge_apend flag is set, the compression order_by and the
+	 * query order_by do match. Therefore, we use a binary heap to decompress
+	 * and merge the tuples.
 	 */
 	if (chunk_state->segment_merge_append)
 	{
-		SlotNumber i;
-		ListCell *lc;
-
 		/* Create the heap on the first call. */
-		if (chunk_state->ms_heap == NULL)
+		if (chunk_state->merge_heap == NULL)
 		{
-			/* Open and count all segments */
-			TupleTableSlot *subslot = NULL;
-			List *subslots = NIL;
-
-			chunk_state->ms_heap =
+			/* Prepare the heap and the batch states */
+			chunk_state->merge_heap =
 				binaryheap_allocate(BINARY_HEAP_DEFAULT_CAPACITY, heap_compare_slots, chunk_state);
+			batch_states_create(chunk_state, INITAL_BATCH_CAPACITY);
 
 			while (true)
 			{
-				subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
+				TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
 
 				if (TupIsNull(subslot))
 					break;
 
-				TupleDesc tdesc = CreateTupleDescCopy(subslot->tts_tupleDescriptor);
-				TupleTableSlot *localsubslot = MakeSingleTupleTableSlot(tdesc, subslot->tts_ops);
-				ExecCopySlot(localsubslot, subslot);
+				SlotNumber batch_state_id = get_next_unused_batch_state_id(chunk_state);
+				DecompressBatchState *batch_state = &chunk_state->batch_states[batch_state_id];
 
-				subslots = lappend(subslots, localsubslot);
-			}
+				TupleDesc tdesc_sub = CreateTupleDescCopy(subslot->tts_tupleDescriptor);
+				batch_state->segment_slot = MakeSingleTupleTableSlot(tdesc_sub, subslot->tts_ops);
+				ExecCopySlot(batch_state->segment_slot, subslot);
 
-			int nbatches = list_length(subslots);
-			elog(WARNING, "We have seen %d number of child batches", nbatches);
-
-			batch_states_create(chunk_state, nbatches);
-
-			/* Decompress top tuple of our segments and insert them into the heap */
-			i = 0;
-			foreach (lc, subslots)
-			{
-				Assert(i < chunk_state->no_batch_states);
-				DecompressBatchState *batch_state = &chunk_state->batch_states[i];
-
-				batch_state->segment_slot = (TupleTableSlot *) lfirst(lc);
 				Assert(!TupIsNull(batch_state->segment_slot));
-
 				initialize_batch(chunk_state, batch_state, batch_state->segment_slot);
 
 				TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
@@ -561,13 +599,16 @@ decompress_chunk_exec(CustomScanState *node)
 												 batch_state->uncompressed_tuple_slot);
 
 				Assert(!TupIsNull(batch_state->uncompressed_tuple_slot));
-				chunk_state->ms_heap =
-					add_to_binary_heap_autoresize(chunk_state->ms_heap, Int32GetDatum(i));
-				i++;
-			}
-			elog(WARNING, "Heap has capacity of %d", chunk_state->ms_heap->bh_space);
 
-			binaryheap_build(chunk_state->ms_heap);
+				chunk_state->merge_heap =
+					add_to_binary_heap_autoresize(chunk_state->merge_heap,
+												  Int32GetDatum(batch_state_id));
+			}
+
+			elog(WARNING, "Heap has capacity of %d", chunk_state->merge_heap->bh_space);
+			elog(WARNING, "Created batch states %d", chunk_state->no_batch_states);
+
+			binaryheap_build(chunk_state->merge_heap);
 		}
 		else
 		{
@@ -576,7 +617,7 @@ decompress_chunk_exec(CustomScanState *node)
 			 * up to this point where the next tuple actually needs to be
 			 * decompressed.
 			 */
-			i = DatumGetInt32(binaryheap_first(chunk_state->ms_heap));
+			SlotNumber i = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
 
 			/* Decompress the next tuple from segment */
 			DecompressBatchState *batch_state = &chunk_state->batch_states[i];
@@ -587,17 +628,17 @@ decompress_chunk_exec(CustomScanState *node)
 
 			/* Put the next tuple into the heap */
 			if (TupIsNull(batch_state->uncompressed_tuple_slot))
-				(void) binaryheap_remove_first(chunk_state->ms_heap);
+				(void) binaryheap_remove_first(chunk_state->merge_heap);
 			else
-				binaryheap_replace_first(chunk_state->ms_heap, Int32GetDatum(i));
+				binaryheap_replace_first(chunk_state->merge_heap, Int32GetDatum(i));
 		}
 
 		/* All tuples are decompressed */
-		if (binaryheap_empty(chunk_state->ms_heap))
+		if (binaryheap_empty(chunk_state->merge_heap))
 			return NULL;
 
 		/* Return the next tuple from our heap. */
-		i = DatumGetInt32(binaryheap_first(chunk_state->ms_heap));
+		SlotNumber i = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
 		Assert(i >= 0);
 
 		/* Fetch tuple from slot */
@@ -648,6 +689,7 @@ decompress_chunk_rescan(CustomScanState *node)
 	ExecReScan(linitial(node->custom_ps));
 }
 
+/* End the decompress operation and free the requested resources */
 static void
 decompress_chunk_end(CustomScanState *node)
 {
@@ -658,11 +700,17 @@ decompress_chunk_end(CustomScanState *node)
 	{
 		DecompressBatchState *batch_state = &chunk_state->batch_states[i];
 
+		/* State is unused */
+		if (batch_state == NULL)
+			continue;
+
 		if (batch_state->segment_slot)
 			ExecDropSingleTupleTableSlot(batch_state->segment_slot);
 
 		if (batch_state->uncompressed_tuple_slot)
 			ExecDropSingleTupleTableSlot(batch_state->uncompressed_tuple_slot);
+
+		batch_state = NULL;
 	}
 
 	ExecEndNode(linitial(node->custom_ps));
