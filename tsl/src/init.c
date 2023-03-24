@@ -235,9 +235,11 @@ CrossModuleFunctions tsl_cm_functions = {
 	.chunk_create_replica_table = chunk_create_replica_table,
 	.hypertable_distributed_set_replication_factor = hypertable_set_replication_factor,
 	.cache_syscache_invalidate = cache_syscache_invalidate,
-	.update_compressed_chunk_relstats = update_compressed_chunk_relstats,
 	.health_check = ts_dist_health_check,
 	.mn_get_foreign_join_paths = tsl_mn_get_foreign_join_paths,
+	.recompress_chunk_segmentwise = tsl_recompress_chunk_segmentwise,
+	.get_compressed_chunk_index_for_recompression =
+		tsl_get_compressed_chunk_index_for_recompression,
 };
 
 static void

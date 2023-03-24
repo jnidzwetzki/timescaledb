@@ -8,22 +8,28 @@ accidentally triggering the load of a previous DB version.**
 
 **Features**
 * #5212 Allow pushdown of reference table joins
+* #5221 Improve Realtime Continuous Aggregate performance
 * #5312 Add timeout support to the ping_data_node()
 * #5361 Add parallel support for partialize_agg()
 * #5252 Improve unique constraint support on compressed hypertables
 * #5312 Add timeout support to ping_data_node()
+* #5454 Add support for ON CONFLICT DO UPDATE for compressed hypertables
 
 **Bugfixes**
 * #5396 Fix SEGMENTBY columns predicates to be pushed down
 * #5410 Fix file trailer handling in the COPY fetcher
 * #5233 Out of on_proc_exit slots on guc license change
 * #5427 Handle user-defined FDW options properly
+* #5428 Use consistent snapshots when scanning metadata
 * #5442 Decompression may have lost DEFAULT values
 * #5446 Add checks for malloc failure in libpq calls
+* #5470 Ensure superuser perms during copy/move chunk
+* #5459 Fix issue creating dimensional constraints
 
 **Thanks**
 * @nikolaps for reporting an issue with the COPY fetcher
 * @S-imo-n for reporting the issue on Background Worker Scheduler crash
+* @kovetskiy and @DZDomi for reporting peformance regression in Realtime Continuous Aggregates
 
 ## 2.10.1 (2023-03-07)
 
@@ -78,6 +84,9 @@ Sooner to that time, we will announce the specific version of TimescaleDB in whi
 * #5262 Extend enabling compression on a continuous aggregrate with 'compress_segmentby' and 'compress_orderby' parameters
 
 **Bugfixes**
+* #4926 Fix corruption when inserting into compressed chunks
+* #5118 Enable auto vacuum for uncompressed chunks
+* #5218 Add role-level security to job error log
 * #5214 Fix use of prepared statement in async module
 * #5218 Add role-level security to job error log
 * #5239 Fix next_start calculation for fixed schedules
