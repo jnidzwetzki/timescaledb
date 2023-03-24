@@ -513,7 +513,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 				elog(ERROR, "operator %u is not a valid ordering operator", sortOperators[i]);
 
 			Assert(strategy == BTLessStrategyNumber || strategy == BTGreaterStrategyNumber);
-			char *meta_col_name = strategy == BTGreaterStrategyNumber ?
+			char *meta_col_name = strategy == BTLessStrategyNumber ?
 									  column_segment_min_name(i + 1) :
 									  column_segment_max_name(i + 1);
 			sortColIdx[i] = get_attnum(dcpath->info->compressed_rte->relid, meta_col_name);

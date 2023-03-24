@@ -406,8 +406,10 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 		if (ci->orderby_nullsfirst != pk->pk_nulls_first)
 			return false;
 
-		if ((ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber) &&
-			(!ci->orderby_asc && pk->pk_strategy == BTLessStrategyNumber))
+		if (ci->orderby_asc && pk->pk_strategy != BTLessStrategyNumber)
+			return false;
+
+		if (!ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber)
 			return false;
 	}
 
@@ -611,6 +613,7 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 
+			Assert(dcpath->reverse == false);
 			dcpath->segment_merge_append = true;
 
 			/* The segment by optimization is only enabled if it can deliver the tuples in the

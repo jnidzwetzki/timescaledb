@@ -156,7 +156,7 @@ decompress_chunk_state_create(CustomScan *cscan)
 	chunk_state->decompression_map = lsecond(cscan->custom_private);
 	chunk_state->sortkeys = lthird(cscan->custom_private);
 
-	/* Sort keys should only be present when segment_merge_append is used*/
+	/* Sort keys should only be present when segment_merge_append is used */
 	Assert(chunk_state->segment_merge_append == true || chunk_state->no_sortkeys == 0);
 	Assert(chunk_state->no_sortkeys == 0 || chunk_state->sortkeys != NULL);
 
@@ -262,6 +262,9 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressBatchState 
 
 	batch_state->columns =
 		palloc0(list_length(chunk_state->decompression_map) * sizeof(DecompressChunkColumnState));
+
+	batch_state->next_uncompressed_tuple_slot = NULL;
+	batch_state->batch_slot = NULL;
 
 	AttrNumber next_compressed_scan_attno = 0;
 	chunk_state->num_columns = 0;
@@ -555,6 +558,7 @@ open_next_batch(DecompressChunkState *chunk_state)
 {
 	TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
 
+	/* All batches are opened */
 	if (TupIsNull(subslot))
 	{
 		chunk_state->batch_with_top_value = INVALID_BATCH_ID;
@@ -564,16 +568,25 @@ open_next_batch(DecompressChunkState *chunk_state)
 	SlotNumber batch_state_id = get_next_unused_batch_state_id(chunk_state);
 	DecompressBatchState *batch_state = &chunk_state->batch_states[batch_state_id];
 
-	TupleDesc tdesc_sub = CreateTupleDescCopy(subslot->tts_tupleDescriptor);
-	batch_state->batch_slot = MakeSingleTupleTableSlot(tdesc_sub, subslot->tts_ops);
-	ExecCopySlot(batch_state->batch_slot, subslot);
+	/* Batch states can be re-used skip tuple slot creation in that case */
+	if (batch_state->batch_slot == NULL)
+	{
+		TupleDesc tdesc_sub = CreateTupleDescCopy(subslot->tts_tupleDescriptor);
+		batch_state->batch_slot = MakeSingleTupleTableSlot(tdesc_sub, subslot->tts_ops);
+	}
 
+	ExecCopySlot(batch_state->batch_slot, subslot);
 	Assert(!TupIsNull(batch_state->batch_slot));
+
 	initialize_batch(chunk_state, batch_state, batch_state->batch_slot);
 
-	TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
-	TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
-	batch_state->next_uncompressed_tuple_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
+	/* Batch states can be re-used skip tuple slot creation in that case */
+	if (batch_state->next_uncompressed_tuple_slot == NULL)
+	{
+		TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
+		TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
+		batch_state->next_uncompressed_tuple_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
+	}
 
 	decompress_next_tuple_from_batch(chunk_state,
 									 batch_state,
@@ -725,10 +738,10 @@ decompress_chunk_end(CustomScanState *node)
 		if (batch_state == NULL)
 			continue;
 
-		if (batch_state->batch_slot)
+		if (batch_state->batch_slot != NULL)
 			ExecDropSingleTupleTableSlot(batch_state->batch_slot);
 
-		if (batch_state->next_uncompressed_tuple_slot)
+		if (batch_state->next_uncompressed_tuple_slot != NULL)
 			ExecDropSingleTupleTableSlot(batch_state->next_uncompressed_tuple_slot);
 
 		batch_state = NULL;
