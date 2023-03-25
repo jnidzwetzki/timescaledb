@@ -96,7 +96,7 @@ typedef struct DecompressChunkState
 	DecompressBatchState *batch_states; /* the batch states */
 	Bitmapset *unused_batch_states;		/* the unused batch states */
 
-	bool segment_merge_append;	   /* Merge append optimization */
+	bool batch_merge_append;	   /* Merge append optimization */
 	struct binaryheap *merge_heap; /* binary heap of slot indices */
 
 	/* Sort keys for heap merge function */
@@ -152,14 +152,14 @@ decompress_chunk_state_create(CustomScan *cscan)
 	chunk_state->hypertable_id = linitial_int(settings);
 	chunk_state->chunk_relid = lsecond_int(settings);
 	chunk_state->reverse = lthird_int(settings);
-	chunk_state->segment_merge_append = lfourth_int(settings);
+	chunk_state->batch_merge_append = lfourth_int(settings);
 	chunk_state->no_sortkeys = llast_int(settings);
 
 	chunk_state->decompression_map = lsecond(cscan->custom_private);
 	chunk_state->sortkeys = lthird(cscan->custom_private);
 
-	/* Sort keys should only be present when segment_merge_append is used */
-	Assert(chunk_state->segment_merge_append == true || chunk_state->no_sortkeys == 0);
+	/* Sort keys should only be present when batch_merge_append is used */
+	Assert(chunk_state->batch_merge_append == true || chunk_state->no_sortkeys == 0);
 	Assert(chunk_state->no_sortkeys == 0 || chunk_state->sortkeys != NULL);
 
 	return (Node *) chunk_state;
@@ -443,7 +443,7 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 	bool isnull;
 	int i;
 
-	Assert(batch_state -> initialized == false);
+	Assert(batch_state->initialized == false);
 
 	MemoryContext old_context = MemoryContextSwitchTo(batch_state->per_batch_context);
 	MemoryContextReset(batch_state->per_batch_context);
@@ -660,11 +660,11 @@ decompress_chunk_exec(CustomScanState *node)
 	if (node->custom_ps == NIL)
 		return NULL;
 
-	/* If the segment_merge_append flag is set, the compression order_by and the
+	/* If the batch_merge_append flag is set, the compression order_by and the
 	 * query order_by do match. Therefore, we use a binary heap to decompress
 	 * and merge the tuples.
 	 */
-	if (chunk_state->segment_merge_append)
+	if (chunk_state->batch_merge_append)
 	{
 		/* Create the heap on the first call. */
 		if (chunk_state->merge_heap == NULL)
@@ -829,9 +829,9 @@ decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *e
 
 	if (es->verbose || es->format != EXPLAIN_FORMAT_TEXT)
 	{
-		if(chunk_state->segment_merge_append)
+		if (chunk_state->batch_merge_append)
 		{
-			ExplainPropertyBool("Per batch merge append", chunk_state->segment_merge_append, es);
+			ExplainPropertyBool("Per batch merge append", chunk_state->batch_merge_append, es);
 		}
 	}
 }

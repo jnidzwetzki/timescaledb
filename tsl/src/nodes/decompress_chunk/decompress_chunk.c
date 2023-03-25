@@ -31,6 +31,12 @@
 #include "utils.h"
 
 #define DECOMPRESS_CHUNK_CPU_TUPLE_COST 0.01
+
+/* We have to decompress the compressed batches in parallel. Therefore, we need a high
+ * amount of memory. Set the tuple cost for this algorithm a very high value to prevent
+ * that this algorithm is chosen when a lot of batches needs to be merged. */
+#define DECOMPRESS_CHUNK_HEAP_MERGE_CPU_TUPLE_COST (DECOMPRESS_CHUNK_CPU_TUPLE_COST * 100)
+
 #define DECOMPRESS_CHUNK_BATCH_SIZE 1000
 
 static CustomPathMethods decompress_chunk_path_methods = {
@@ -367,6 +373,37 @@ cost_decompress_chunk(Path *path, Path *compressed_path)
 }
 
 /*
+ * Calculate the costs for retrieving the decompressed in-order using
+ * a binary heap.
+ */
+static void
+cost_decompress_chunk_merge(PlannerInfo *root, DecompressChunkPath *dcpath, Path *child_path)
+{
+	Path sort_path; /* dummy for result of cost_sort */
+
+	cost_sort(&sort_path,
+			  root,
+			  dcpath->compressed_pathkeys,
+			  child_path->total_cost,
+			  child_path->rows,
+			  child_path->pathtarget->width,
+			  0.0,
+			  work_mem,
+			  -1);
+
+	/* startup_cost is cost before fetching first tuple */
+	if (sort_path.rows > 0)
+		dcpath->cpath.path.startup_cost = sort_path.total_cost / sort_path.rows;
+
+	/* total_cost is cost for fetching all tuples */
+	// TODO: Wait for cost model fix
+	// dcpath->cpath.path.total_cost =
+	//	sort_path.total_cost + dcpath->cpath.path.rows * DECOMPRESS_CHUNK_HEAP_MERGE_CPU_TUPLE_COST;
+
+	dcpath->cpath.path.rows = sort_path.rows * DECOMPRESS_CHUNK_BATCH_SIZE;
+}
+
+/*
  * Is the query by ordering a prefix of the compression order by, we don't need to sort
  * sort the tuples. We can perform a merge append of the segments. This function checks
  * if the compression ordering and the query ordering are compatible.
@@ -417,7 +454,7 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 		/* Check order, if the order of the first column do not match, switch to backward scan */
 		if (ci->orderby_asc && pk->pk_strategy != BTLessStrategyNumber)
 		{
-			if(pk_index == 1)
+			if (pk_index == 1)
 				merge_result = SCAN_BACKWARD;
 			else if (merge_result == SCAN_BACKWARD)
 				continue;
@@ -427,7 +464,7 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 
 		if (!ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber)
 		{
-			if(pk_index == 1)
+			if (pk_index == 1)
 				merge_result = SCAN_BACKWARD;
 			else if (merge_result == SCAN_BACKWARD)
 				continue;
@@ -598,42 +635,8 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 
 		path = (Path *) decompress_chunk_path_create(root, info, 0, child_path);
 
-		/* If we can push down the sort below the DecompressChunk node, we set the pathkeys of the
-		 * decompress node to the query pathkeys, while remembering the compressed_pathkeys
-		 * corresponding to those query_pathkeys. We will determine whether to put a sort between
-		 * the decompression node and the scan during plan creation */
-		if (sort_info.can_pushdown_sort)
-		{
-			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
-			dcpath->reverse = sort_info.reverse;
-			dcpath->needs_sequence_num = sort_info.needs_sequence_num;
-			dcpath->compressed_pathkeys = sort_info.compressed_pathkeys;
-			dcpath->cpath.path.pathkeys = root->query_pathkeys;
-
-			/*
-			 * Add costing for a sort. The standard Postgres pattern is to add the cost during
-			 * path creation, but not add the sort path itself, that's done during plan creation.
-			 * Examples of this in: create_merge_append_path & create_merge_append_plan
-			 */
-			if (!pathkeys_contained_in(dcpath->compressed_pathkeys, child_path->pathkeys))
-			{
-				Path sort_path; /* dummy for result of cost_sort */
-
-				cost_sort(&sort_path,
-						  root,
-						  dcpath->compressed_pathkeys,
-						  child_path->total_cost,
-						  child_path->rows,
-						  child_path->pathtarget->width,
-						  0.0,
-						  work_mem,
-						  -1);
-				cost_decompress_chunk(&dcpath->cpath.path, &sort_path);
-			}
-			add_path(chunk_rel, &dcpath->cpath.path);
-		}
-
-		/* Compression segment append optimization. Perform a merge append of the involved segments
+		/*
+		 * Compression segment append optimization. Perform a merge append of the involved segments
 		 */
 		MergeChunkResult merge_result = is_able_to_use_segment_merge_append(root, info, chunk);
 		if (merge_result != MERGE_NOT_POSSIBLE)
@@ -641,30 +644,55 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 
 			dcpath->reverse = (merge_result != SCAN_FORWARD);
-			dcpath->segment_merge_append = true;
+			dcpath->batch_merge_append = true;
 
 			/* The segment by optimization is only enabled if it can deliver the tuples in the
 			 * same order as the query requested it. So, we can just copy the pathkeys of the
 			 * query here.
 			 */
 			dcpath->cpath.path.pathkeys = root->query_pathkeys;
-
-			/*
-			 * Using the optimization, we have to fetch the top tuples for each segment first. So,
-			 * the startup costs are higher than without the optimization. Because we have to
-			 * prepare each segment first, we have startup costs of "number of segments" * "segment
-			 * startup costs".
-			 *
-			 * We don't adjust the total costs and reuse them from the copied unoptimized decompress
-			 * chunk path.
-			 *
-			 * Because our path will deliver the tuples with the pathkeys of the query, this path
-			 * should be preferred over a path that don't uses this optimization and delivers the
-			 * tuples with different pathkeys.
-			 */
-			dcpath->cpath.path.startup_cost = dcpath->cpath.path.startup_cost * child_path->rows;
-
+			cost_decompress_chunk_merge(root, dcpath, child_path);
 			add_path(chunk_rel, &dcpath->cpath.path);
+		}
+		else
+		{
+			/* If we can push down the sort below the DecompressChunk node, we set the pathkeys of
+			 * the decompress node to the query pathkeys, while remembering the compressed_pathkeys
+			 * corresponding to those query_pathkeys. We will determine whether to put a sort
+			 * between the decompression node and the scan during plan creation */
+			if (sort_info.can_pushdown_sort)
+			{
+				DecompressChunkPath *dcpath =
+					copy_decompress_chunk_path((DecompressChunkPath *) path);
+				dcpath->reverse = sort_info.reverse;
+				dcpath->needs_sequence_num = sort_info.needs_sequence_num;
+				dcpath->compressed_pathkeys = sort_info.compressed_pathkeys;
+				dcpath->cpath.path.pathkeys = root->query_pathkeys;
+
+				/*
+				 * Add costing for a sort. The standard Postgres pattern is to add the cost during
+				 * path creation, but not add the sort path itself, that's done during plan
+				 * creation. Examples of this in: create_merge_append_path &
+				 * create_merge_append_plan
+				 */
+				if (!pathkeys_contained_in(dcpath->compressed_pathkeys, child_path->pathkeys))
+				{
+					Path sort_path; /* dummy for result of cost_sort */
+
+					cost_sort(&sort_path,
+							  root,
+							  dcpath->compressed_pathkeys,
+							  child_path->total_cost,
+							  child_path->rows,
+							  child_path->pathtarget->width,
+							  0.0,
+							  work_mem,
+							  -1);
+
+					cost_decompress_chunk(&dcpath->cpath.path, &sort_path);
+				}
+				add_path(chunk_rel, &dcpath->cpath.path);
+			}
 		}
 
 		/*
@@ -1321,7 +1349,7 @@ decompress_chunk_path_create(PlannerInfo *root, CompressionInfo *info, int paral
 
 	path->cpath.flags = 0;
 	path->cpath.methods = &decompress_chunk_path_methods;
-	path->segment_merge_append = false;
+	path->batch_merge_append = false;
 
 	/* To prevent a non-parallel path with this node appearing
 	 * in a parallel plan we only set parallel_safe to true

@@ -451,13 +451,13 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 	 */
 	build_decompression_map(dcpath, compressed_scan->plan.targetlist, chunk_attrs_needed);
 
-	/* Build heap sort info for segment_merge_append */
+	/* Build heap sort info for batch_merge_append */
 	int numsortkeys = 0;
 	SortSupportData *sortkeys = NULL;
 
-	if (dcpath->segment_merge_append)
+	if (dcpath->batch_merge_append)
 	{
-		/* segment_merge_append is used when the 'order by' of the query and the
+		/* batch_merge_append is used when the 'order by' of the query and the
 		 * 'order by' of the segments do match, we use a heap to merge the segments.
 		 * For the heap we need a compare function that determines the heap order. This
 		 * function is constructed here.
@@ -502,7 +502,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 			PrepareSortSupportFromOrderingOp(sortOperators[i], sortKey);
 		}
 
-		/* Build a sort node for the segments */
+		/* Build a sort node for the compressed batches */
 		for (int i = 0; i < numsortkeys; i++)
 		{
 			Oid opfamily, opcintype;
@@ -522,7 +522,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 				elog(ERROR, "couldn't find metadata column \"%s\"", meta_col_name);
 		}
 
-		/* Now build the segment sort node */
+		/* Now build the compressed batches sort node */
 		Sort *sort = ts_make_sort((Plan *) compressed_scan,
 								  numsortkeys,
 								  sortColIdx,
@@ -556,7 +556,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 	settings = list_make5_int(dcpath->info->hypertable_id,
 							  dcpath->info->chunk_rte->relid,
 							  dcpath->reverse,
-							  dcpath->segment_merge_append,
+							  dcpath->batch_merge_append,
 							  numsortkeys);
 	decompress_plan->custom_private = list_make3(settings, dcpath->decompression_map, sortkeys);
 
