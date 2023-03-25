@@ -70,6 +70,7 @@ typedef struct DecompressChunkColumnState
 
 typedef struct DecompressBatchState
 {
+	bool initialized;
 	TupleTableSlot *uncompressed_tuple_slot;
 	TupleTableSlot *compressed_tuple_slot;
 	DecompressChunkColumnState *columns;
@@ -84,7 +85,6 @@ typedef struct DecompressChunkState
 	List *decompression_map;
 	int num_columns;
 
-	bool initialized;
 	bool reverse;
 	int hypertable_id;
 	Oid chunk_relid;
@@ -206,6 +206,7 @@ batch_states_enlarge(DecompressChunkState *chunk_state, int nbatches)
 
 	chunk_state->unused_batch_states =
 		bms_add_range(chunk_state->unused_batch_states, chunk_state->no_batch_states, nbatches - 1);
+
 	chunk_state->no_batch_states = nbatches;
 }
 
@@ -217,6 +218,8 @@ set_batch_state_to_unused(DecompressChunkState *chunk_state, int batch_id)
 {
 	Assert(batch_id < chunk_state->no_batch_states);
 	Assert(!bms_is_member(batch_id, chunk_state->unused_batch_states));
+
+	chunk_state->batch_states[batch_id].initialized = false;
 	chunk_state->unused_batch_states = bms_add_member(chunk_state->unused_batch_states, batch_id);
 }
 
@@ -232,7 +235,10 @@ get_next_unused_batch_state_id(DecompressChunkState *chunk_state)
 	Assert(!bms_is_empty(chunk_state->unused_batch_states));
 
 	SlotNumber next_free_batch = bms_next_member(chunk_state->unused_batch_states, -1);
+
 	Assert(next_free_batch >= 0);
+	Assert(next_free_batch < chunk_state->no_batch_states);
+	Assert(chunk_state->batch_states[next_free_batch].initialized == false);
 
 	bms_del_member(chunk_state->unused_batch_states, next_free_batch);
 
@@ -265,6 +271,7 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressBatchState 
 	batch_state->columns =
 		palloc0(list_length(chunk_state->decompression_map) * sizeof(DecompressChunkColumnState));
 
+	batch_state->initialized = false;
 	batch_state->uncompressed_tuple_slot = NULL;
 	batch_state->compressed_tuple_slot = NULL;
 
@@ -433,6 +440,8 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 	bool isnull;
 	int i;
 
+	Assert(batch_state -> initialized == false);
+
 	MemoryContext old_context = MemoryContextSwitchTo(batch_state->per_batch_context);
 	MemoryContextReset(batch_state->per_batch_context);
 
@@ -509,7 +518,7 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 				break;
 		}
 	}
-	chunk_state->initialized = true;
+	batch_state->initialized = true;
 	MemoryContextSwitchTo(old_context);
 }
 
@@ -755,7 +764,22 @@ decompress_chunk_exec(CustomScanState *node)
 static void
 decompress_chunk_rescan(CustomScanState *node)
 {
-	((DecompressChunkState *) node)->initialized = false;
+	DecompressChunkState *chunk_state = (DecompressChunkState *) node;
+
+	if (chunk_state->merge_heap != NULL)
+	{
+		binaryheap_free(chunk_state->merge_heap);
+		chunk_state->merge_heap = NULL;
+	}
+
+	for (int i = 0; i < chunk_state->no_batch_states; i++)
+	{
+		DecompressBatchState *batch_state = &chunk_state->batch_states[i];
+
+		if (batch_state != NULL)
+			batch_state->initialized = false;
+	}
+
 	ExecReScan(linitial(node->custom_ps));
 }
 
@@ -770,6 +794,8 @@ decompress_chunk_end(CustomScanState *node)
 	{
 		elog(WARNING, "Heap has capacity of %d", chunk_state->merge_heap->bh_space);
 		elog(WARNING, "Created batch states %d", chunk_state->no_batch_states);
+		binaryheap_free(chunk_state->merge_heap);
+		chunk_state->merge_heap = NULL;
 	}
 
 	for (i = 0; i < chunk_state->no_batch_states; i++)
@@ -815,7 +841,7 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 		 * Reached end of batch. Check that the columns that we're decompressing
 		 * row-by-row have also ended.
 		 */
-		chunk_state->initialized = false;
+		batch_state->initialized = false;
 		for (int i = 0; i < chunk_state->num_columns; i++)
 		{
 			DecompressChunkColumnState *column = &batch_state->columns[i];
@@ -836,7 +862,7 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 		return;
 	}
 
-	Assert(chunk_state->initialized);
+	Assert(batch_state->initialized);
 	Assert(batch_state->total_batch_rows > 0);
 	Assert(batch_state->current_batch_row < batch_state->total_batch_rows);
 
@@ -892,7 +918,7 @@ decompress_chunk_create_tuple(DecompressChunkState *chunk_state, DecompressBatch
 {
 	while (true)
 	{
-		if (!chunk_state->initialized)
+		if (!batch_state->initialized)
 		{
 			TupleTableSlot *compressed_tuple_slot =
 				ExecProcNode(linitial(chunk_state->csstate.custom_ps));
@@ -912,6 +938,6 @@ decompress_chunk_create_tuple(DecompressChunkState *chunk_state, DecompressBatch
 		if (!TupIsNull(decompressed_tuple_slot))
 			return;
 
-		chunk_state->initialized = false;
+		batch_state->initialized = false;
 	}
 }
