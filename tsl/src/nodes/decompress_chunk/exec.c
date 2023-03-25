@@ -136,6 +136,61 @@ static CustomExecMethods decompress_chunk_state_methods = {
 	.ExplainCustomScan = decompress_chunk_explain,
 };
 
+/*
+ * Build the sortkeys data structure from the list structure in the
+ * custom_private field of the custom scan
+ */
+static void
+build_sort_info(DecompressChunkState *chunk_state, List *sortinfo)
+{
+	if (sortinfo == NIL)
+	{
+		chunk_state->no_sortkeys = 0;
+		chunk_state->sortkeys = NULL;
+		return;
+	}
+
+	List *sort_col_idx = linitial(sortinfo);
+	List *sort_ops = lsecond(sortinfo);
+	List *sort_collations = lthird(sortinfo);
+	List *sort_nulls = lfourth(sortinfo);
+
+	chunk_state->no_sortkeys = list_length(linitial((sortinfo)));
+
+	Assert(list_length(sort_col_idx) == list_length(sort_ops));
+	Assert(list_length(sort_ops) == list_length(sort_collations));
+	Assert(list_length(sort_collations) == list_length(sort_nulls));
+
+	if (chunk_state->no_sortkeys <= 0)
+		return;
+
+	SortSupportData *sortkeys = palloc0(sizeof(SortSupportData) * chunk_state->no_sortkeys);
+
+	/* Inspired by nodeMergeAppend.c */
+	for (int i = 0; i < chunk_state->no_sortkeys; i++)
+	{
+		SortSupportData *sortKey = &sortkeys[i];
+
+		sortKey->ssup_cxt = CurrentMemoryContext;
+		sortKey->ssup_collation = list_nth_oid(sort_collations, i);
+		sortKey->ssup_nulls_first = list_nth_oid(sort_nulls, i);
+		sortKey->ssup_attno = list_nth_oid(sort_col_idx, i);
+
+		/*
+		 * It isn't feasible to perform abbreviated key conversion, since
+		 * tuples are pulled into mergestate's binary heap as needed.  It
+		 * would likely be counter-productive to convert tuples into an
+		 * abbreviated representation as they're pulled up, so opt out of that
+		 * additional optimization entirely.
+		 */
+		sortKey->abbreviate = false;
+
+		PrepareSortSupportFromOrderingOp(list_nth_oid(sort_ops, i), sortKey);
+	}
+
+	chunk_state->sortkeys = sortkeys;
+}
+
 Node *
 decompress_chunk_state_create(CustomScan *cscan)
 {
@@ -147,16 +202,17 @@ decompress_chunk_state_create(CustomScan *cscan)
 	chunk_state->csstate.methods = &decompress_chunk_state_methods;
 
 	settings = linitial(cscan->custom_private);
-	Assert(list_length(settings) == 5);
+	Assert(list_length(settings) == 4);
 
 	chunk_state->hypertable_id = linitial_int(settings);
 	chunk_state->chunk_relid = lsecond_int(settings);
 	chunk_state->reverse = lthird_int(settings);
 	chunk_state->batch_merge_append = lfourth_int(settings);
-	chunk_state->no_sortkeys = llast_int(settings);
-
 	chunk_state->decompression_map = lsecond(cscan->custom_private);
-	chunk_state->sortkeys = lthird(cscan->custom_private);
+
+	/* Extract sort info */
+	List *sortinfo = lthird(cscan->custom_private);
+	build_sort_info(chunk_state, sortinfo);
 
 	/* Sort keys should only be present when batch_merge_append is used */
 	Assert(chunk_state->batch_merge_append == true || chunk_state->no_sortkeys == 0);

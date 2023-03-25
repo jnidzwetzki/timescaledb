@@ -452,8 +452,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 	build_decompression_map(dcpath, compressed_scan->plan.targetlist, chunk_attrs_needed);
 
 	/* Build heap sort info for batch_merge_append */
-	int numsortkeys = 0;
-	SortSupportData *sortkeys = NULL;
+	List *sort_options = NIL;
 
 	if (dcpath->batch_merge_append)
 	{
@@ -466,6 +465,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 		Oid *sortOperators = NULL;
 		Oid *collations = NULL;
 		bool *nullsFirst = NULL;
+		int numsortkeys = 0;
 
 		ts_prepare_sort_from_pathkeys(&decompress_plan->scan.plan,
 									  dcpath->cpath.path.pathkeys,
@@ -478,31 +478,27 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 									  &collations,
 									  &nullsFirst);
 
-		sortkeys = palloc0(sizeof(SortSupportData) * numsortkeys);
+		List *sort_col_idx = NIL;
+		List *sort_ops = NIL;
+		List *sort_collations = NIL;
+		List *sort_nulls = NIL;
 
-		/* Inspired by nodeMergeAppend.c */
+		/* Since we have to keep the sort info in custom_private, we store the information
+		 * in copyable lists */
 		for (int i = 0; i < numsortkeys; i++)
 		{
-			SortSupportData *sortKey = &sortkeys[i];
-
-			sortKey->ssup_cxt = CurrentMemoryContext;
-			sortKey->ssup_collation = collations[i];
-			sortKey->ssup_nulls_first = nullsFirst[i];
-			sortKey->ssup_attno = sortColIdx[i];
-
-			/*
-			 * It isn't feasible to perform abbreviated key conversion, since
-			 * tuples are pulled into mergestate's binary heap as needed.  It
-			 * would likely be counter-productive to convert tuples into an
-			 * abbreviated representation as they're pulled up, so opt out of that
-			 * additional optimization entirely.
-			 */
-			sortKey->abbreviate = false;
-
-			PrepareSortSupportFromOrderingOp(sortOperators[i], sortKey);
+			sort_col_idx = lappend_oid(sort_col_idx, sortColIdx[i]);
+			sort_ops = lappend_oid(sort_ops, sortOperators[i]);
+			sort_collations = lappend_oid(sort_collations, collations[i]);
+			sort_nulls = lappend_oid(sort_nulls, nullsFirst[i]);
 		}
 
-		/* Build a sort node for the compressed batches */
+		sort_options = list_make4(sort_col_idx, sort_ops, sort_collations, sort_nulls);
+
+		/* Build a sort node for the compressed batches. The sort function is derived from the sort
+		 * function of the pathkeys, except that it refers to the min and max elements of the
+		 * batches. We have already verified that the pathkeys match the compression order_by, so
+		 * this mapping can be done here. */
 		for (int i = 0; i < numsortkeys; i++)
 		{
 			Oid opfamily, opcintype;
@@ -553,12 +549,11 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 
 	Assert(list_length(custom_plans) == 1);
 
-	settings = list_make5_int(dcpath->info->hypertable_id,
+	settings = list_make4_int(dcpath->info->hypertable_id,
 							  dcpath->info->chunk_rte->relid,
 							  dcpath->reverse,
-							  dcpath->batch_merge_append,
-							  numsortkeys);
-	decompress_plan->custom_private = list_make3(settings, dcpath->decompression_map, sortkeys);
+							  dcpath->batch_merge_append);
+	decompress_plan->custom_private = list_make3(settings, dcpath->decompression_map, sort_options);
 
 	return &decompress_plan->scan.plan;
 }
