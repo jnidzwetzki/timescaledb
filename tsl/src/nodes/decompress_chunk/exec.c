@@ -193,6 +193,8 @@ static void
 batch_states_enlarge(DecompressChunkState *chunk_state, int nbatches)
 {
 	Assert(nbatches > chunk_state->no_batch_states);
+
+	/* Request additional memory */
 	chunk_state->batch_states =
 		(DecompressBatchState *) repalloc(chunk_state->batch_states,
 										  sizeof(DecompressBatchState) * nbatches);
@@ -204,6 +206,7 @@ batch_states_enlarge(DecompressChunkState *chunk_state, int nbatches)
 		initialize_column_state(chunk_state, batch_state);
 	}
 
+	/* Register the new states as unused */
 	chunk_state->unused_batch_states =
 		bms_add_range(chunk_state->unused_batch_states, chunk_state->no_batch_states, nbatches - 1);
 
