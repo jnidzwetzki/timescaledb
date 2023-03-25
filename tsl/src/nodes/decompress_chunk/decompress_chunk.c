@@ -46,6 +46,13 @@ typedef struct SortInfo
 	bool reverse;
 } SortInfo;
 
+typedef enum MergeChunkResult
+{
+	MERGE_NOT_POSSIBLE,
+	SCAN_FORWARD,
+	SCAN_BACKWARD
+} MergeChunkResult;
+
 static RangeTblEntry *decompress_chunk_make_rte(Oid compressed_relid, LOCKMODE lockmode);
 static void create_compressed_scan_paths(PlannerInfo *root, RelOptInfo *compressed_rel,
 										 int parallel_workers, CompressionInfo *info,
@@ -73,7 +80,7 @@ is_compressed_column(CompressionInfo *info, AttrNumber attno)
 
 /*
  * Like ts_make_pathkey_from_sortop but passes down the compressed relid so that existing
- * equivalence members that are marked as childen are properly checked.
+ * equivalence members that are marked as children are properly checked.
  */
 static PathKey *
 make_pathkey_from_compressed(PlannerInfo *root, Index compressed_relid, Expr *expr, Oid ordering_op,
@@ -364,7 +371,7 @@ cost_decompress_chunk(Path *path, Path *compressed_path)
  * sort the tuples. We can perform a merge append of the segments. This function checks
  * if the compression ordering and the query ordering are compatible.
  */
-static bool
+static MergeChunkResult
 is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Chunk *chunk)
 {
 	int pk_index;
@@ -375,9 +382,10 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 	List *pathkeys = root->query_pathkeys;
 	FormData_hypertable_compression *ci;
 	ListCell *lc = list_head(pathkeys);
+	MergeChunkResult merge_result = SCAN_FORWARD;
 
 	if (pathkeys == NIL || ts_chunk_is_unordered(chunk) || ts_chunk_is_partial(chunk))
-		return false;
+		return MERGE_NOT_POSSIBLE;
 
 	/*
 	 * Loop over the of pathkeys of the query. These pathkeys
@@ -389,32 +397,50 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 		expr = find_em_expr_for_rel(pk->pk_eclass, info->chunk_rel);
 
 		if (expr == NULL || !IsA(expr, Var))
-			return false;
+			return MERGE_NOT_POSSIBLE;
 
 		var = castNode(Var, expr);
 
 		if (var->varattno <= 0)
-			return false;
+			return MERGE_NOT_POSSIBLE;
 
 		column_name = get_attname(info->chunk_rte->relid, var->varattno, false);
 		ci = get_column_compressioninfo(info->hypertable_compression_info, column_name);
 
 		if (ci->orderby_column_index != pk_index)
-			return false;
+			return MERGE_NOT_POSSIBLE;
 
 		/* Test that ORDER BY and NULLS first/last do match */
 		if (ci->orderby_nullsfirst != pk->pk_nulls_first)
-			return false;
+			return MERGE_NOT_POSSIBLE;
 
+		/* Check order, if the order of the first column do not match, switch to backward scan */
 		if (ci->orderby_asc && pk->pk_strategy != BTLessStrategyNumber)
-			return false;
+		{
+			if(pk_index == 1)
+				merge_result = SCAN_BACKWARD;
+			else if (merge_result == SCAN_BACKWARD)
+				continue;
+			else
+				return MERGE_NOT_POSSIBLE;
+		}
 
 		if (!ci->orderby_asc && pk->pk_strategy != BTGreaterStrategyNumber)
-			return false;
+		{
+			if(pk_index == 1)
+				merge_result = SCAN_BACKWARD;
+			else if (merge_result == SCAN_BACKWARD)
+				continue;
+			else
+				return MERGE_NOT_POSSIBLE;
+		}
 	}
 
 	/* If we still have path keys left, we can not use the optimization */
-	return (lc == NULL);
+	if (lc != NULL)
+		return MERGE_NOT_POSSIBLE;
+
+	return merge_result;
 }
 
 void
@@ -609,11 +635,12 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 
 		/* Compression segment append optimization. Perform a merge append of the involved segments
 		 */
-		if (is_able_to_use_segment_merge_append(root, info, chunk))
+		MergeChunkResult merge_result = is_able_to_use_segment_merge_append(root, info, chunk);
+		if (merge_result != MERGE_NOT_POSSIBLE)
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 
-			Assert(dcpath->reverse == false);
+			dcpath->reverse = (merge_result != SCAN_FORWARD);
 			dcpath->segment_merge_append = true;
 
 			/* The segment by optimization is only enabled if it can deliver the tuples in the

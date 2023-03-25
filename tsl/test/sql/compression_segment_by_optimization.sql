@@ -26,7 +26,35 @@ SELECT compress_chunk(c.schema_name|| '.' || c.table_name) FROM _timescaledb_cat
 -- test1 uses compress_segmentby='x1, x2, x5' and compress_orderby = 'time DESC, x3, x4'
 
 ------
--- Tests only on segment by and compression order by
+-- Tests based on ordering
+------
+
+-- Should be optimized 
+:PREFIX
+SELECT * FROM test1 ORDER BY time DESC;
+
+-- Should be optimized 
+:PREFIX
+SELECT * FROM test1 ORDER BY time DESC NULLS FIRST;
+
+-- Should not be optimized (NULL order wrong)
+:PREFIX
+SELECT * FROM test1 ORDER BY time DESC NULLS LAST;
+
+-- Should not be optimized (wrong order)
+:PREFIX
+SELECT * FROM test1 ORDER BY time ASC;
+
+-- Should not be optimized (NULL order wrong)
+:PREFIX
+SELECT * FROM test1 ORDER BY time ASC NULLS LAST;
+
+-- Should be optimized (backward scan)
+:PREFIX
+SELECT * FROM test1 ORDER BY time ASC NULLS FIRST;
+
+------
+-- Tests based on attributes
 ------
 
 -- Should be optimized 
@@ -52,4 +80,3 @@ SELECT * FROM test1 WHERE x4 > 100 ORDER BY time DESC, x4, x3;
 -- Should not be optimized 
 :PREFIX
 SELECT * FROM test1 WHERE x4 > 100 ORDER BY time ASC, x3, x4;
-

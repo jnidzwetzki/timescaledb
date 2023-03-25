@@ -565,8 +565,6 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 }
 
 // TODO
-// * [ ] Optimize multiple batches per segment
-// * [ ] what is about the HT partitioning? And reverse?
 // * [ ] Write/Enhance test cases
 
 /* Add a new datum to the heap. In contrast to the
@@ -827,7 +825,12 @@ decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *e
 	DecompressChunkState *chunk_state = (DecompressChunkState *) node;
 
 	if (es->verbose || es->format != EXPLAIN_FORMAT_TEXT)
-		ExplainPropertyBool("Per segment merge append", chunk_state->segment_merge_append, es);
+	{
+		if(chunk_state->segment_merge_append)
+		{
+			ExplainPropertyBool("Per batch merge append", chunk_state->segment_merge_append, es);
+		}
+	}
 }
 
 static void
