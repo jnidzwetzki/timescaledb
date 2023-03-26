@@ -639,7 +639,7 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 		 * Compression segment append optimization. Perform a merge append of the involved segments
 		 */
 		MergeChunkResult merge_result = is_able_to_use_segment_merge_append(root, info, chunk);
-		if (merge_result != MERGE_NOT_POSSIBLE)
+		if (ts_guc_enable_decompression_heap_merge && merge_result != MERGE_NOT_POSSIBLE)
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
 
