@@ -12,9 +12,6 @@
 #define DECOMPRESS_CHUNK_COUNT_ID -9
 #define DECOMPRESS_CHUNK_SEQUENCE_NUM_ID -10
 
-/* The initial capacity of the binary heap */
-#define BINARY_HEAP_DEFAULT_CAPACITY 16
-
 /* Initial amount of batch states */
 #define INITAL_BATCH_CAPACITY 16
 

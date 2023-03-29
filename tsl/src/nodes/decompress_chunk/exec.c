@@ -727,7 +727,7 @@ decompress_chunk_exec(CustomScanState *node)
 		{
 			/* Prepare the heap and the batch states */
 			chunk_state->merge_heap =
-				binaryheap_allocate(BINARY_HEAP_DEFAULT_CAPACITY, heap_compare_slots, chunk_state);
+				binaryheap_allocate(INITAL_BATCH_CAPACITY, heap_compare_slots, chunk_state);
 			batch_states_create(chunk_state, INITAL_BATCH_CAPACITY);
 
 			/* Open the first batch */
