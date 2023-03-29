@@ -951,21 +951,21 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 			decompressed_tuple_slot->tts_isnull[attr] = result.is_null;
 			decompressed_tuple_slot->tts_values[attr] = result.val;
 		}
+	}
 
-		/*
-		 * It's a virtual tuple slot, so no point in clearing/storing it
-		 * per each row, we can just update the values in-place. This saves
-		 * some CPU. We have to store it after ExecQual returns false (the tuple
-		 * didn't pass the filter), or after a new batch. The standard protocol
-		 * is to clear and set the tuple slot for each row, but our output tuple
-		 * slots are read-only, and the memory is owned by this node, so it is
-		 * safe to violate this protocol.
-		 */
-		Assert(TTS_IS_VIRTUAL(decompressed_tuple_slot));
-		if (TTS_EMPTY(decompressed_tuple_slot))
-		{
-			ExecStoreVirtualTuple(decompressed_tuple_slot);
-		}
+	/*
+	 * It's a virtual tuple slot, so no point in clearing/storing it
+	 * per each row, we can just update the values in-place. This saves
+	 * some CPU. We have to store it after ExecQual returns false (the tuple
+	 * didn't pass the filter), or after a new batch. The standard protocol
+	 * is to clear and set the tuple slot for each row, but our output tuple
+	 * slots are read-only, and the memory is owned by this node, so it is
+	 * safe to violate this protocol.
+	 */
+	Assert(TTS_IS_VIRTUAL(decompressed_tuple_slot));
+	if (TTS_EMPTY(decompressed_tuple_slot))
+	{
+		ExecStoreVirtualTuple(decompressed_tuple_slot);
 	}
 
 	batch_state->current_batch_row++;
