@@ -788,7 +788,6 @@ RelationGetSmgr(Relation rel)
 }
 #endif
 
-
 #if PG14_LT
 /*
  * pg_nodiscard was introduced with PostgreSQL 14

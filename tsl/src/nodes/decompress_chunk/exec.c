@@ -530,7 +530,9 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 						getmissingattr(decompressed_slot->tts_tupleDescriptor,
 									   attr + 1,
 									   &decompressed_slot->tts_isnull[attr]);
+					break;
 				}
+
 				CompressedDataHeader *header = (CompressedDataHeader *) PG_DETOAST_DATUM(value);
 
 				column->compressed.iterator =
@@ -692,9 +694,7 @@ open_next_batch(DecompressChunkState *chunk_state)
 					 batch_state->compressed_slot,
 					 batch_state->decompressed_slot);
 
-	decompress_next_tuple_from_batch(chunk_state,
-									 batch_state,
-									 batch_state->decompressed_slot);
+	decompress_next_tuple_from_batch(chunk_state, batch_state, batch_state->decompressed_slot);
 
 	Assert(!TupIsNull(batch_state->decompressed_slot));
 
@@ -717,9 +717,7 @@ remove_top_tuple_and_decompress_next(DecompressChunkState *chunk_state)
 	/* Decompress the next tuple from segment */
 	DecompressBatchState *batch_state = &chunk_state->batch_states[i];
 
-	decompress_next_tuple_from_batch(chunk_state,
-									 batch_state,
-									 batch_state->decompressed_slot);
+	decompress_next_tuple_from_batch(chunk_state, batch_state, batch_state->decompressed_slot);
 
 	if (TupIsNull(batch_state->decompressed_slot))
 	{
@@ -736,8 +734,7 @@ remove_top_tuple_and_decompress_next(DecompressChunkState *chunk_state)
 
 /* Perform the projection and selection of the decompressed tuple */
 static TupleTableSlot *
-decompress_chunk_perform_select_project(CustomScanState *node,
-										TupleTableSlot *decompressed_slot)
+decompress_chunk_perform_select_project(CustomScanState *node, TupleTableSlot *decompressed_slot)
 {
 	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 
@@ -1021,10 +1018,7 @@ decompress_chunk_create_tuple(DecompressChunkState *chunk_state, DecompressBatch
 			if (TupIsNull(compressed_slot))
 				return;
 
-			initialize_batch(chunk_state,
-							 batch_state,
-							 compressed_slot,
-							 decompressed_slot);
+			initialize_batch(chunk_state, batch_state, compressed_slot, decompressed_slot);
 		}
 
 		/* Decompress next tuple from batch */
