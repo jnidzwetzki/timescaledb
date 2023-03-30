@@ -16,7 +16,7 @@ set(TEST_FILES
     compression_conflicts.sql
     compression_permissions.sql
     compression_qualpushdown.sql
-    compression_segment_by_optimization.sql
+    compression_batch_merge.sql
     dist_param.sql
     dist_views.sql
     exp_cagg_monthly.sql
