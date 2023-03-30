@@ -46,6 +46,7 @@
 #include <parser/parse_oper.h>
 #include <parser/parse_relation.h>
 #include <parser/parse_type.h>
+#include <parser/parsetree.h>
 #include <rewrite/rewriteHandler.h>
 #include <rewrite/rewriteManip.h>
 #include <utils/acl.h>
@@ -763,6 +764,7 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 	ListCell *l;
 	bool found = false;
 	bool custom_origin = false;
+	Const *const_arg;
 
 	/* Make sure tbinfo was initialized. This assumption is used below. */
 	Assert(tbinfo->bucket_width == 0);
@@ -803,6 +805,9 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 
 			/* Only column allowed : time_bucket('1day', <column> ) */
 			col_arg = lsecond(fe->args);
+			/* Could be a named argument */
+			if (IsA(col_arg, NamedArgExpr))
+				col_arg = (Node *) castNode(NamedArgExpr, col_arg)->arg;
 
 			if (!(IsA(col_arg, Var)) || ((Var *) col_arg)->varattno != tbinfo->htpartcolno)
 				ereport(ERROR,
@@ -830,6 +835,7 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 
 			if (list_length(fe->args) >= 4)
 			{
+				/* origin */
 				Const *arg = check_time_bucket_argument(lfourth(fe->args), "fourth");
 				if (exprType((Node *) arg) == TEXTOID)
 				{
@@ -853,19 +859,22 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 					/* Origin is always 3rd arg for date variants. */
 					if (list_length(fe->args) == 3)
 					{
+						Node *arg = lthird(fe->args);
 						custom_origin = true;
+						/* this function also takes care of named arguments */
+						const_arg = check_time_bucket_argument(arg, "third");
 						tbinfo->origin = DatumGetTimestamp(
-							DirectFunctionCall1(date_timestamp,
-												castNode(Const, lthird(fe->args))->constvalue));
+							DirectFunctionCall1(date_timestamp, const_arg->constvalue));
 					}
 					break;
 				case TIMESTAMPOID:
 					/* Origin is always 3rd arg for timestamp variants. */
 					if (list_length(fe->args) == 3)
 					{
+						Node *arg = lthird(fe->args);
 						custom_origin = true;
-						tbinfo->origin =
-							DatumGetTimestamp(castNode(Const, lthird(fe->args))->constvalue);
+						const_arg = check_time_bucket_argument(arg, "third");
+						tbinfo->origin = DatumGetTimestamp(const_arg->constvalue);
 					}
 					break;
 				case TIMESTAMPTZOID:
@@ -880,8 +889,20 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 							 exprType(lfourth(fe->args)) == TIMESTAMPTZOID)
 					{
 						custom_origin = true;
-						tbinfo->origin =
-							DatumGetTimestampTz(castNode(Const, lfourth(fe->args))->constvalue);
+						if (IsA(lfourth(fe->args), Const))
+						{
+							tbinfo->origin =
+								DatumGetTimestampTz(castNode(Const, lfourth(fe->args))->constvalue);
+						}
+						/* could happen in a statement like time_bucket('1h', .., 'utc', origin =>
+						 * ...) */
+						else if (IsA(lfourth(fe->args), NamedArgExpr))
+						{
+							Const *constval =
+								check_time_bucket_argument(lfourth(fe->args), "fourth");
+
+							tbinfo->origin = DatumGetTimestampTz(constval->constvalue);
+						}
 					}
 			}
 			if (custom_origin && TIMESTAMP_NOT_FINITE(tbinfo->origin))
@@ -897,7 +918,12 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 			 * partitioning column as int constants default to int4 and so expression would
 			 * have a cast and not be a Const.
 			 */
-			width_arg = eval_const_expressions(NULL, linitial(fe->args));
+			width_arg = linitial(fe->args);
+
+			if (IsA(width_arg, NamedArgExpr))
+				width_arg = (Node *) castNode(NamedArgExpr, width_arg)->arg;
+
+			width_arg = eval_const_expressions(NULL, width_arg);
 			if (IsA(width_arg, Const))
 			{
 				Const *width = castNode(Const, width_arg);
@@ -1024,7 +1050,11 @@ cagg_query_supported(const Query *query, StringInfo hint, StringInfo detail, con
 	}
 #endif
 #endif
-
+	if (!query->jointree->fromlist)
+	{
+		appendStringInfoString(hint, "FROM clause missing in the query");
+		return false;
+	}
 	if (query->commandType != CMD_SELECT)
 	{
 		appendStringInfoString(hint, "Use a SELECT query in the continuous aggregate view.");
@@ -1284,31 +1314,42 @@ cagg_validate_query(const Query *query, const bool finalized, const char *cagg_s
 					op = (OpExpr *) join->quals;
 					rte = list_nth(query->rtable, ((RangeTblRef *) join->larg)->rtindex - 1);
 					rte_other = list_nth(query->rtable, ((RangeTblRef *) join->rarg)->rtindex - 1);
+					if (rte->subquery != NULL || rte_other->subquery != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("invalid continuous aggregate view"),
+								 errdetail("sub-queries are not supported in FROM clause")));
+					RangeTblEntry *jrte = rt_fetch(join->rtindex, query->rtable);
+					if (jrte->joinaliasvars == NIL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("invalid continuous aggregate view")));
 				}
 			}
 		}
 
 		/*
-		 * Cagg with joins does not support hierarchical caggs in from clause.
+		 * Error out if there is aynthing else than one normal table and one hypertable
+		 * in the from clause, e.g. sub-query, lateral, two hypertables, etc.
 		 */
-		if (rte->relkind == RELKIND_VIEW || rte_other->relkind == RELKIND_VIEW)
+		if (rte->lateral || rte_other->lateral)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("joins for hierarchical continuous aggregates are not supported")));
-
-		/*
-		 * Error out if there is aynthing else than one normal table and one hypertable
-		 * in the from clause, e.g. sub-query.
-		 */
-		if (((rte->relkind != RELKIND_RELATION && rte->relkind != RELKIND_VIEW) ||
-			 rte->tablesample || rte->inh == false) ||
-			((rte_other->relkind != RELKIND_RELATION && rte_other->relkind != RELKIND_VIEW) ||
-			 rte_other->tablesample || rte_other->inh == false) ||
+					 errmsg("invalid continuous aggregate view"),
+					 errdetail("lateral are not supported in FROM clause")));
+		if ((rte->relkind == RELKIND_VIEW && ts_is_hypertable(rte_other->relid)) ||
+			(rte_other->relkind == RELKIND_VIEW && ts_is_hypertable(rte->relid)))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("invalid continuous aggregate view"),
+					 errdetail("views are not supported in FROM clause")));
+		if (rte->relkind != RELKIND_VIEW && rte_other->relkind != RELKIND_VIEW &&
 			(ts_is_hypertable(rte->relid) == ts_is_hypertable(rte_other->relid)))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("invalid continuous aggregate view"),
-					 errdetail("from clause can only have one hypertable and one normal table")));
+					 errdetail("multiple hypertables or normal tables"
+							   " are not supported in FROM clause")));
 
 		/* Only inner joins are allowed. */
 		if (jointype != JOIN_INNER)
@@ -1340,7 +1381,12 @@ cagg_validate_query(const Query *query, const bool finalized, const char *cagg_s
 		 * that we know which one is hypertable to carry out the related
 		 * processing in later parts of code.
 		 */
-		normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
+		if (rte->relkind == RELKIND_VIEW)
+			normal_table_id = rte_other->relid;
+		else if (rte_other->relkind == RELKIND_VIEW)
+			normal_table_id = rte->relid;
+		else
+			normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
 		if (normal_table_id == rte->relid)
 			rte = rte_other;
 	}
@@ -2450,7 +2496,9 @@ finalizequery_get_select_query(FinalizeQueryInfo *inp, List *matcollist,
 	 * which contains the information of the materialised hypertable
 	 * that is created for this cagg.
 	 */
-	if (list_length(inp->final_userquery->jointree->fromlist) >= CONTINUOUS_AGG_MAX_JOIN_RELATIONS)
+	if (list_length(inp->final_userquery->jointree->fromlist) >=
+			CONTINUOUS_AGG_MAX_JOIN_RELATIONS ||
+		!IsA(linitial(inp->final_userquery->jointree->fromlist), RangeTblRef))
 	{
 		rte = makeNode(RangeTblEntry);
 		rte->alias = makeAlias(relname, NIL);
@@ -2458,6 +2506,18 @@ finalizequery_get_select_query(FinalizeQueryInfo *inp, List *matcollist,
 		rte->inh = true;
 		rte->rellockmode = 1;
 		rte->eref = copyObject(rte->alias);
+		ListCell *l;
+		foreach (l, inp->final_userquery->jointree->fromlist)
+		{
+			Node *jtnode = (Node *) lfirst(l);
+			JoinExpr *join = NULL;
+			if (IsA(jtnode, JoinExpr))
+			{
+				join = castNode(JoinExpr, jtnode);
+				RangeTblEntry *jrte = rt_fetch(join->rtindex, inp->final_userquery->rtable);
+				rte->joinaliasvars = jrte->joinaliasvars;
+			}
+		}
 	}
 	else
 		rte = llast_node(RangeTblEntry, inp->final_userquery->rtable);
@@ -3411,12 +3471,17 @@ build_union_query(CAggTimebucketInfo *tbinfo, int matpartcolno, Query *q1, Query
 	 */
 	if (list_length(q2->rtable) == CONTINUOUS_AGG_MAX_JOIN_RELATIONS)
 	{
+		Oid normal_table_id = InvalidOid;
 		RangeTblRef *rtref = linitial_node(RangeTblRef, q2->jointree->fromlist);
 		RangeTblEntry *rte = list_nth(q2->rtable, rtref->rtindex - 1);
 		RangeTblRef *rtref_other = lsecond_node(RangeTblRef, q2->jointree->fromlist);
 		RangeTblEntry *rte_other = list_nth(q2->rtable, rtref_other->rtindex - 1);
-
-		Oid normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
+		if (rte->relkind == RELKIND_VIEW)
+			normal_table_id = rte_other->relid;
+		else if (rte_other->relkind == RELKIND_VIEW)
+			normal_table_id = rte->relid;
+		else
+			normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
 		if (normal_table_id == rte->relid)
 			varno = 2;
 		else

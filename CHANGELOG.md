@@ -14,6 +14,7 @@ accidentally triggering the load of a previous DB version.**
 * #5252 Improve unique constraint support on compressed hypertables
 * #5312 Add timeout support to ping_data_node()
 * #5454 Add support for ON CONFLICT DO UPDATE for compressed hypertables
+* #5344 Enable JOINS for Hierarchical Continuous Aggregates
 
 **Bugfixes**
 * #5396 Fix SEGMENTBY columns predicates to be pushed down
@@ -25,11 +26,15 @@ accidentally triggering the load of a previous DB version.**
 * #5446 Add checks for malloc failure in libpq calls
 * #5470 Ensure superuser perms during copy/move chunk
 * #5459 Fix issue creating dimensional constraints
+* #5499 Do not segfault on large histogram() parameters
+* #5497 Allow named time_bucket arguments in Cagg definition
+* #5500 Fix when no FROM clause in continuous aggregate definition
 
 **Thanks**
 * @nikolaps for reporting an issue with the COPY fetcher
 * @S-imo-n for reporting the issue on Background Worker Scheduler crash
 * @kovetskiy and @DZDomi for reporting peformance regression in Realtime Continuous Aggregates
+* @geezhu for reporting issue on segfault in historgram()
 
 ## 2.10.1 (2023-03-07)
 
@@ -47,7 +52,6 @@ We recommend that you upgrade at the next available opportunity.
 * #5364 Fix num_chunks inconsistency in hypertables view
 * #5367 Fix column name handling in old-style continuous aggregates
 * #5378 Fix multinode DML HA performance regression
-* #5384 Fix Hierarchical Continuous Aggregates chunk_interval_size
 * #5304 Fix sub-second intervals in hierarchical caggs
 
 **Thanks**
@@ -82,6 +86,10 @@ Sooner to that time, we will announce the specific version of TimescaleDB in whi
 * #5246 Make connection establishment interruptible
 * #5253 Make data node command execution interruptible
 * #5262 Extend enabling compression on a continuous aggregrate with 'compress_segmentby' and 'compress_orderby' parameters
+* #5343 Set PortalContext when starting job
+* #5312 Add timeout support to the ping_data_node()
+* #5212 Allow pushdown of reference table joins
+* #5344 Enable JOINS for Hierarchical continuous aggregates
 
 **Bugfixes**
 * #4926 Fix corruption when inserting into compressed chunks
