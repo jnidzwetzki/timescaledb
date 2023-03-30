@@ -43,7 +43,7 @@ typedef struct DecompressChunkColumnState
 	/*
 	 * Attno of the decompressed column in the output of DecompressChunk node.
 	 * Negative values are special columns that do not have a representation in
-	 * the uncompressed chunk, but are still used for decompression. They should
+	 * the decompressed chunk, but are still used for decompression. They should
 	 * have the respective `type` field.
 	 */
 	AttrNumber output_attno;
@@ -71,7 +71,7 @@ typedef struct DecompressChunkColumnState
 typedef struct DecompressBatchState
 {
 	bool initialized;
-	TupleTableSlot *uncompressed_tuple_slot;
+	TupleTableSlot *decompressed_tuple_slot;
 	TupleTableSlot *compressed_tuple_slot;
 	DecompressChunkColumnState *columns;
 	int total_batch_rows;
@@ -308,7 +308,7 @@ get_next_unused_batch_state_id(DecompressChunkState *chunk_state)
  * initialize column chunk_state
  *
  * the column chunk_state indexes are based on the index
- * of the columns of the uncompressed chunk because
+ * of the columns of the decompressed chunk because
  * that is the tuple layout we are creating
  */
 static void
@@ -331,7 +331,7 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressBatchState 
 		palloc0(list_length(chunk_state->decompression_map) * sizeof(DecompressChunkColumnState));
 
 	batch_state->initialized = false;
-	batch_state->uncompressed_tuple_slot = NULL;
+	batch_state->decompressed_tuple_slot = NULL;
 	batch_state->compressed_tuple_slot = NULL;
 
 	AttrNumber next_compressed_scan_attno = 0;
@@ -355,7 +355,7 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressBatchState 
 
 		if (output_attno > 0)
 		{
-			/* normal column that is also present in uncompressed chunk */
+			/* normal column that is also present in decompressed chunk */
 			Form_pg_attribute attribute =
 				TupleDescAttr(desc, AttrNumberGetAttrOffset(output_attno));
 			FormData_hypertable_compression *ht_info =
@@ -500,6 +500,8 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 	int i;
 
 	Assert(batch_state->initialized == false);
+	Assert(!TTS_EMPTY(compressed_tuple_slot));
+	Assert(TTS_EMPTY(decompressed_tuple_slot));
 
 	MemoryContext old_context = MemoryContextSwitchTo(batch_state->per_batch_context);
 	MemoryContextReset(batch_state->per_batch_context);
@@ -594,10 +596,10 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 	SlotNumber batchB = DatumGetInt32(b);
 	Assert(batchB <= chunk_state->no_batch_states);
 
-	TupleTableSlot *tupleA = chunk_state->batch_states[batchA].uncompressed_tuple_slot;
+	TupleTableSlot *tupleA = chunk_state->batch_states[batchA].decompressed_tuple_slot;
 	Assert(!TupIsNull(tupleA));
 
-	TupleTableSlot *tupleB = chunk_state->batch_states[batchB].uncompressed_tuple_slot;
+	TupleTableSlot *tupleB = chunk_state->batch_states[batchB].decompressed_tuple_slot;
 	Assert(!TupIsNull(tupleB));
 
 	for (int nkey = 0; nkey < chunk_state->no_sortkeys; nkey++)
@@ -623,15 +625,12 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 	return 0;
 }
 
-// TODO
-// * [ ] Write/Enhance test cases
-
-/* Add a new datum to the heap. In contrast to the
- * binaryheap_add_unordered() function, the capacity
- * of the heap is automatically increased if needed.
+/* Add a new datum to the heap and perform an automatic resizing if needed. In contrast to
+ * the binaryheap_add_unordered() function, the capacity of the heap is automatically
+ * increased if needed.
  */
 static pg_nodiscard binaryheap *
-add_to_binary_heap_autoresize(binaryheap *heap, Datum d)
+binaryheap_add_unordered_ar(binaryheap *heap, Datum d)
 {
 	/* Resize heap if needed */
 	if (heap->bh_size >= heap->bh_space)
@@ -677,41 +676,98 @@ open_next_batch(DecompressChunkState *chunk_state)
 	Assert(!TupIsNull(batch_state->compressed_tuple_slot));
 
 	/* Batch states can be re-used skip tuple slot creation in that case */
-	if (batch_state->uncompressed_tuple_slot == NULL)
+	if (batch_state->decompressed_tuple_slot == NULL)
 	{
 		TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
 		TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
-		batch_state->uncompressed_tuple_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
+		batch_state->decompressed_tuple_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
 	}
 	else
 	{
-		ExecClearTuple(batch_state->uncompressed_tuple_slot);
+		ExecClearTuple(batch_state->decompressed_tuple_slot);
 	}
 
 	initialize_batch(chunk_state,
 					 batch_state,
 					 batch_state->compressed_tuple_slot,
-					 batch_state->uncompressed_tuple_slot);
+					 batch_state->decompressed_tuple_slot);
 
 	decompress_next_tuple_from_batch(chunk_state,
 									 batch_state,
-									 batch_state->uncompressed_tuple_slot);
+									 batch_state->decompressed_tuple_slot);
 
-	Assert(!TupIsNull(batch_state->uncompressed_tuple_slot));
+	Assert(!TupIsNull(batch_state->decompressed_tuple_slot));
 
 	chunk_state->merge_heap =
-		add_to_binary_heap_autoresize(chunk_state->merge_heap, Int32GetDatum(batch_state_id));
+		binaryheap_add_unordered_ar(chunk_state->merge_heap, Int32GetDatum(batch_state_id));
 
 	chunk_state->batch_with_top_value = batch_state_id;
 
 	return true;
 }
 
+/* Remove the top tuple from the heap (i.e., the tuple we have returned last time) and decompress
+ * the next tuple from the batch.
+ */
+static void
+remove_top_tuple_and_decompress_next(DecompressChunkState *chunk_state)
+{
+	SlotNumber i = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
+
+	/* Decompress the next tuple from segment */
+	DecompressBatchState *batch_state = &chunk_state->batch_states[i];
+
+	decompress_next_tuple_from_batch(chunk_state,
+									 batch_state,
+									 batch_state->decompressed_tuple_slot);
+
+	if (TupIsNull(batch_state->decompressed_tuple_slot))
+	{
+		/* Batch is exhausted, recycle batch_state */
+		(void) binaryheap_remove_first(chunk_state->merge_heap);
+		set_batch_state_to_unused(chunk_state, i);
+	}
+	else
+	{
+		/* Put the next tuple from this batch on the heap */
+		binaryheap_replace_first(chunk_state->merge_heap, Int32GetDatum(i));
+	}
+}
+
+/* Perform the projection and selection of the decompressed tuple */
+static TupleTableSlot *
+decompress_chunk_perform_select_project(CustomScanState *node,
+										TupleTableSlot *decompressed_tuple_slot)
+{
+	ExprContext *econtext = node->ss.ps.ps_ExprContext;
+
+	/*
+	 * Reset expression memory context to clean out any cruft from
+	 * previous batch. Our batches are 1000 rows max, and this memory
+	 * context is used by ExecProject and ExecQual, which shouldn't
+	 * leak too much. So we only do this per batch and not per tuple to
+	 * save some CPU.
+	 */
+	econtext->ecxt_scantuple = decompressed_tuple_slot;
+	ResetExprContext(econtext);
+
+	if (node->ss.ps.qual && !ExecQual(node->ss.ps.qual, econtext))
+	{
+		InstrCountFiltered1(node, 1);
+		ExecClearTuple(decompressed_tuple_slot);
+		return NULL;
+	}
+
+	if (!node->ss.ps.ps_ProjInfo)
+		return decompressed_tuple_slot;
+
+	return ExecProject(node->ss.ps.ps_ProjInfo);
+}
+
 static TupleTableSlot *
 decompress_chunk_exec(CustomScanState *node)
 {
 	DecompressChunkState *chunk_state = (DecompressChunkState *) node;
-	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 
 	if (node->custom_ps == NIL)
 		return NULL;
@@ -735,49 +791,42 @@ decompress_chunk_exec(CustomScanState *node)
 		}
 		else
 		{
-			/* Remove the tuple we have returned last time and decompress
-			 * the next tuple from the segment. This operation is delayed
-			 * up to this point where the next tuple actually needs to be
-			 * decompressed.
+			/* Remove the tuple returned in the last iteration and refresh the heap.
+			 * This operation is delayed up to this point where the next tuple actually
+			 * needs to be decompressed.
 			 */
-			SlotNumber i = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
-
-			/* Decompress the next tuple from segment */
-			DecompressBatchState *batch_state = &chunk_state->batch_states[i];
-
-			decompress_next_tuple_from_batch(chunk_state,
-											 batch_state,
-											 batch_state->uncompressed_tuple_slot);
-
-			/* Put the next tuple into the heap */
-			if (TupIsNull(batch_state->uncompressed_tuple_slot))
-			{
-				(void) binaryheap_remove_first(chunk_state->merge_heap);
-				set_batch_state_to_unused(chunk_state, i);
-			}
-			else
-			{
-				binaryheap_replace_first(chunk_state->merge_heap, Int32GetDatum(i));
-			}
+			remove_top_tuple_and_decompress_next(chunk_state);
 		}
 
-		/* All tuples are decompressed and consumed */
-		if (binaryheap_empty(chunk_state->merge_heap))
-			return NULL;
-
-		/* If the next tuple is from the top batch, open follow-up bathces. */
-		while (DatumGetInt32(binaryheap_first(chunk_state->merge_heap)) ==
-			   chunk_state->batch_with_top_value)
+		while (true)
 		{
-			open_next_batch(chunk_state);
+			/* All tuples are decompressed and consumed */
+			if (binaryheap_empty(chunk_state->merge_heap))
+				return NULL;
+
+			/* If the next tuple is from the top batch, open the next baches batches until
+			 * the next batch contains a tuple that is larger than the top tuple from the
+			 * heap (i.e., the batch is not the top element of the heap). */
+			while (DatumGetInt32(binaryheap_first(chunk_state->merge_heap)) ==
+				   chunk_state->batch_with_top_value)
+			{
+				open_next_batch(chunk_state);
+			}
+
+			/* Fetch tuple the top tuple from the heap */
+			SlotNumber slot_number = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
+			TupleTableSlot *decompressed_tuple_slot =
+				chunk_state->batch_states[slot_number].decompressed_tuple_slot;
+			Assert(decompressed_tuple_slot != NULL);
+
+			TupleTableSlot *result_tuple =
+				decompress_chunk_perform_select_project(node, decompressed_tuple_slot);
+
+			if (result_tuple != NULL)
+				return result_tuple;
+
+			remove_top_tuple_and_decompress_next(chunk_state);
 		}
-
-		/* Fetch tuple from slot */
-		SlotNumber slot_number = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
-		TupleTableSlot *result = chunk_state->batch_states[slot_number].uncompressed_tuple_slot;
-		Assert(result != NULL);
-
-		return result;
 	}
 	else
 	{
@@ -793,27 +842,11 @@ decompress_chunk_exec(CustomScanState *node)
 			if (TupIsNull(decompressed_tuple_slot))
 				return NULL;
 
-			/*
-			 * Reset expression memory context to clean out any cruft from
-			 * previous batch. Our batches are 1000 rows max, and this memory
-			 * context is used by ExecProject and ExecQual, which shouldn't
-			 * leak too much. So we only do this per batch and not per tuple to
-			 * save some CPU.
-			 */
-			econtext->ecxt_scantuple = decompressed_tuple_slot;
-			ResetExprContext(econtext);
+			TupleTableSlot *result_tuple =
+				decompress_chunk_perform_select_project(node, decompressed_tuple_slot);
 
-			if (node->ss.ps.qual && !ExecQual(node->ss.ps.qual, econtext))
-			{
-				InstrCountFiltered1(node, 1);
-				ExecClearTuple(decompressed_tuple_slot);
-				continue;
-			}
-
-			if (!node->ss.ps.ps_ProjInfo)
-				return decompressed_tuple_slot;
-
-			return ExecProject(node->ss.ps.ps_ProjInfo);
+			if (result_tuple != NULL)
+				return result_tuple;
 		}
 	}
 }
@@ -866,8 +899,8 @@ decompress_chunk_end(CustomScanState *node)
 		if (batch_state->compressed_tuple_slot != NULL)
 			ExecDropSingleTupleTableSlot(batch_state->compressed_tuple_slot);
 
-		if (batch_state->uncompressed_tuple_slot != NULL)
-			ExecDropSingleTupleTableSlot(batch_state->uncompressed_tuple_slot);
+		if (batch_state->decompressed_tuple_slot != NULL)
+			ExecDropSingleTupleTableSlot(batch_state->decompressed_tuple_slot);
 
 		batch_state = NULL;
 	}
