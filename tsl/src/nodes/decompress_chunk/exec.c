@@ -849,8 +849,8 @@ decompress_chunk_end(CustomScanState *node)
 
 	if (chunk_state->merge_heap != NULL)
 	{
-		elog(WARNING, "Heap has capacity of %d", chunk_state->merge_heap->bh_space);
-		elog(WARNING, "Created batch states %d", chunk_state->no_batch_states);
+		elog(DEBUG3, "Heap has capacity of %d", chunk_state->merge_heap->bh_space);
+		elog(DEBUG3, "Created batch states %d", chunk_state->no_batch_states);
 		binaryheap_free(chunk_state->merge_heap);
 		chunk_state->merge_heap = NULL;
 	}
