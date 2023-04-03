@@ -71,7 +71,8 @@ typedef struct DecompressChunkColumnState
 typedef struct DecompressBatchState
 {
 	bool initialized;
-	TupleTableSlot *decompressed_slot;
+	TupleTableSlot *decompressed_slot_projected;
+	TupleTableSlot *decompressed_slot_scan;
 	TupleTableSlot *compressed_slot;
 	DecompressChunkColumnState *columns;
 	int total_batch_rows;
@@ -329,7 +330,8 @@ initialize_column_state(DecompressChunkState *chunk_state, DecompressBatchState 
 		palloc0(list_length(chunk_state->decompression_map) * sizeof(DecompressChunkColumnState));
 
 	batch_state->initialized = false;
-	batch_state->decompressed_slot = NULL;
+	batch_state->decompressed_slot_projected = NULL;
+	batch_state->decompressed_slot_scan = NULL;
 	batch_state->compressed_slot = NULL;
 
 	AttrNumber next_compressed_scan_attno = 0;
@@ -513,20 +515,46 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 	ExecCopySlot(batch_state->compressed_slot, subslot);
 	Assert(!TupIsNull(batch_state->compressed_slot));
 
-	/* Batch states can be re-used skip tuple slot creation in that case */
-	if (batch_state->decompressed_slot == NULL)
+	/* Batch states can be re-used, so create slots one time and re-use them when the batch
+	 * state is reused.
+	 */
+	if (batch_state->decompressed_slot_scan == NULL)
 	{
+		/* Get a reference the the output TupleTableSlot */
 		TupleTableSlot *slot = chunk_state->csstate.ss.ss_ScanTupleSlot;
 		TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
-		batch_state->decompressed_slot = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
+		batch_state->decompressed_slot_scan = MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
 	}
 	else
 	{
-		ExecClearTuple(batch_state->decompressed_slot);
+		ExecClearTuple(batch_state->decompressed_slot_scan);
+	}
+
+	if (batch_state->decompressed_slot_projected == NULL)
+	{
+		if (chunk_state->csstate.ss.ps.ps_ProjInfo != NULL)
+		{
+			TupleTableSlot *slot = (chunk_state->csstate.ss.ps.ps_ProjInfo) ?
+									   chunk_state->csstate.ss.ps.ps_ProjInfo->pi_state.resultslot :
+									   chunk_state->csstate.ss.ss_ScanTupleSlot;
+			TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
+			batch_state->decompressed_slot_projected =
+				MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
+		}
+		else
+		{
+			batch_state->decompressed_slot_projected = batch_state->decompressed_slot_scan;
+		}
+	}
+	else
+	{
+		ExecClearTuple(batch_state->decompressed_slot_projected);
 	}
 
 	Assert(!TTS_EMPTY(batch_state->compressed_slot));
-	Assert(TTS_EMPTY(batch_state->decompressed_slot));
+	Assert(batch_state->decompressed_slot_scan == NULL ||
+		   TTS_EMPTY(batch_state->decompressed_slot_scan));
+	Assert(TTS_EMPTY(batch_state->decompressed_slot_projected));
 
 	batch_state->total_batch_rows = 0;
 	batch_state->current_batch_row = 0;
@@ -553,10 +581,10 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 					 * set it now.
 					 */
 					AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
-					batch_state->decompressed_slot->tts_values[attr] =
-						getmissingattr(batch_state->decompressed_slot->tts_tupleDescriptor,
+					batch_state->decompressed_slot_scan->tts_values[attr] =
+						getmissingattr(batch_state->decompressed_slot_scan->tts_tupleDescriptor,
 									   attr + 1,
-									   &batch_state->decompressed_slot->tts_isnull[attr]);
+									   &batch_state->decompressed_slot_scan->tts_isnull[attr]);
 					break;
 				}
 
@@ -578,10 +606,10 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 				 * save it once per batch, which we do here.
 				 */
 				AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
-				batch_state->decompressed_slot->tts_values[attr] =
+				batch_state->decompressed_slot_scan->tts_values[attr] =
 					slot_getattr(batch_state->compressed_slot,
 								 column->compressed_scan_attno,
-								 &batch_state->decompressed_slot->tts_isnull[attr]);
+								 &batch_state->decompressed_slot_scan->tts_isnull[attr]);
 				break;
 			}
 			case COUNT_COLUMN:
@@ -627,10 +655,10 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 	SlotNumber batchB = DatumGetInt32(b);
 	Assert(batchB <= chunk_state->no_batch_states);
 
-	TupleTableSlot *tupleA = chunk_state->batch_states[batchA].decompressed_slot;
+	TupleTableSlot *tupleA = chunk_state->batch_states[batchA].decompressed_slot_projected;
 	Assert(!TupIsNull(tupleA));
 
-	TupleTableSlot *tupleB = chunk_state->batch_states[batchB].decompressed_slot;
+	TupleTableSlot *tupleB = chunk_state->batch_states[batchB].decompressed_slot_projected;
 	Assert(!TupIsNull(tupleB));
 
 	for (int nkey = 0; nkey < chunk_state->no_sortkeys; nkey++)
@@ -680,30 +708,34 @@ binaryheap_add_unordered_ar(binaryheap *heap, Datum d)
 static bool
 open_next_batch(DecompressChunkState *chunk_state)
 {
-	TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
-
-	/* All batches are opened */
-	if (TupIsNull(subslot))
+	while (true)
 	{
-		chunk_state->batch_with_top_value = INVALID_BATCH_ID;
-		return false;
+		TupleTableSlot *subslot = ExecProcNode(linitial(chunk_state->csstate.custom_ps));
+
+		/* All batches are consumed */
+		if (TupIsNull(subslot))
+		{
+			chunk_state->batch_with_top_value = INVALID_BATCH_ID;
+			return false;
+		}
+
+		SlotNumber batch_state_id = get_next_unused_batch_state_id(chunk_state);
+		DecompressBatchState *batch_state = &chunk_state->batch_states[batch_state_id];
+
+		initialize_batch(chunk_state, batch_state, subslot);
+
+		decompress_next_tuple_from_batch(chunk_state, batch_state);
+
+		if (!TupIsNull(batch_state->decompressed_slot_projected))
+		{
+			chunk_state->merge_heap =
+				binaryheap_add_unordered_ar(chunk_state->merge_heap, Int32GetDatum(batch_state_id));
+
+			chunk_state->batch_with_top_value = batch_state_id;
+
+			return true;
+		}
 	}
-
-	SlotNumber batch_state_id = get_next_unused_batch_state_id(chunk_state);
-	DecompressBatchState *batch_state = &chunk_state->batch_states[batch_state_id];
-
-	initialize_batch(chunk_state, batch_state, subslot);
-
-	decompress_next_tuple_from_batch(chunk_state, batch_state);
-
-	Assert(!TupIsNull(batch_state->decompressed_slot));
-
-	chunk_state->merge_heap =
-		binaryheap_add_unordered_ar(chunk_state->merge_heap, Int32GetDatum(batch_state_id));
-
-	chunk_state->batch_with_top_value = batch_state_id;
-
-	return true;
 }
 
 /* Remove the top tuple from the heap (i.e., the tuple we have returned last time) and decompress
@@ -719,7 +751,7 @@ remove_top_tuple_and_decompress_next(DecompressChunkState *chunk_state)
 
 	decompress_next_tuple_from_batch(chunk_state, batch_state);
 
-	if (TupIsNull(batch_state->decompressed_slot))
+	if (TupIsNull(batch_state->decompressed_slot_projected))
 	{
 		/* Batch is exhausted, recycle batch_state */
 		(void) binaryheap_remove_first(chunk_state->merge_heap);
@@ -733,8 +765,10 @@ remove_top_tuple_and_decompress_next(DecompressChunkState *chunk_state)
 }
 
 /* Perform the projection and selection of the decompressed tuple */
-static TupleTableSlot *
-decompress_chunk_perform_select_project(CustomScanState *node, TupleTableSlot *decompressed_slot)
+static void
+decompress_chunk_perform_select_project(CustomScanState *node,
+										TupleTableSlot *decompressed_slot_scan,
+										TupleTableSlot *decompressed_slot_projected)
 {
 	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 
@@ -745,20 +779,21 @@ decompress_chunk_perform_select_project(CustomScanState *node, TupleTableSlot *d
 	 * leak too much. So we only do this per batch and not per tuple to
 	 * save some CPU.
 	 */
-	econtext->ecxt_scantuple = decompressed_slot;
+	econtext->ecxt_scantuple = decompressed_slot_scan;
 	ResetExprContext(econtext);
 
 	if (node->ss.ps.qual && !ExecQual(node->ss.ps.qual, econtext))
 	{
 		InstrCountFiltered1(node, 1);
-		ExecClearTuple(decompressed_slot);
-		return NULL;
+		ExecClearTuple(decompressed_slot_projected);
+		return;
 	}
 
-	if (!node->ss.ps.ps_ProjInfo)
-		return decompressed_slot;
-
-	return ExecProject(node->ss.ps.ps_ProjInfo);
+	if (node->ss.ps.ps_ProjInfo)
+	{
+		TupleTableSlot *projected = ExecProject(node->ss.ps.ps_ProjInfo);
+		ExecCopySlot(decompressed_slot_projected, projected);
+	}
 }
 
 static TupleTableSlot *
@@ -795,57 +830,38 @@ decompress_chunk_exec(CustomScanState *node)
 			remove_top_tuple_and_decompress_next(chunk_state);
 		}
 
-		while (true)
+		/* All tuples are decompressed and consumed */
+		if (binaryheap_empty(chunk_state->merge_heap))
+			return NULL;
+
+		/* If the next tuple is from the top batch, open the next baches batches until
+		 * the next batch contains a tuple that is larger than the top tuple from the
+		 * heap (i.e., the batch is not the top element of the heap). */
+		while (DatumGetInt32(binaryheap_first(chunk_state->merge_heap)) ==
+			   chunk_state->batch_with_top_value)
 		{
-			/* All tuples are decompressed and consumed */
-			if (binaryheap_empty(chunk_state->merge_heap))
-				return NULL;
-
-			/* If the next tuple is from the top batch, open the next baches batches until
-			 * the next batch contains a tuple that is larger than the top tuple from the
-			 * heap (i.e., the batch is not the top element of the heap). */
-			while (DatumGetInt32(binaryheap_first(chunk_state->merge_heap)) ==
-				   chunk_state->batch_with_top_value)
-			{
-				open_next_batch(chunk_state);
-			}
-
-			/* Fetch tuple the top tuple from the heap */
-			SlotNumber slot_number = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
-			TupleTableSlot *decompressed_slot =
-				chunk_state->batch_states[slot_number].decompressed_slot;
-			Assert(decompressed_slot != NULL);
-
-			TupleTableSlot *result_tuple =
-				decompress_chunk_perform_select_project(node, decompressed_slot);
-
-			if (result_tuple != NULL)
-				return result_tuple;
-
-			remove_top_tuple_and_decompress_next(chunk_state);
+			open_next_batch(chunk_state);
 		}
+
+		/* Fetch tuple the top tuple from the heap */
+		SlotNumber slot_number = DatumGetInt32(binaryheap_first(chunk_state->merge_heap));
+		TupleTableSlot *decompressed_slot_projected =
+			chunk_state->batch_states[slot_number].decompressed_slot_projected;
+
+		Assert(decompressed_slot_projected != NULL);
+		Assert(!TupIsNull(decompressed_slot_projected));
+
+		return decompressed_slot_projected;
 	}
 	else
 	{
 		if (chunk_state->batch_states == NULL)
 			batch_states_create(chunk_state, 1);
 
-		while (true)
-		{
-			DecompressBatchState *batch_state = &chunk_state->batch_states[0];
-			decompress_chunk_create_tuple(chunk_state, batch_state);
+		DecompressBatchState *batch_state = &chunk_state->batch_states[0];
+		decompress_chunk_create_tuple(chunk_state, batch_state);
 
-			TupleTableSlot *decompressed_slot = batch_state->decompressed_slot;
-
-			if (TupIsNull(decompressed_slot))
-				return NULL;
-
-			TupleTableSlot *result_tuple =
-				decompress_chunk_perform_select_project(node, decompressed_slot);
-
-			if (result_tuple != NULL)
-				return result_tuple;
-		}
+		return batch_state->decompressed_slot_projected;
 	}
 }
 
@@ -897,8 +913,8 @@ decompress_chunk_end(CustomScanState *node)
 		if (batch_state->compressed_slot != NULL)
 			ExecDropSingleTupleTableSlot(batch_state->compressed_slot);
 
-		if (batch_state->decompressed_slot != NULL)
-			ExecDropSingleTupleTableSlot(batch_state->decompressed_slot);
+		if (batch_state->decompressed_slot_scan != NULL)
+			ExecDropSingleTupleTableSlot(batch_state->decompressed_slot_scan);
 
 		batch_state = NULL;
 	}
@@ -923,84 +939,107 @@ decompress_chunk_explain(CustomScanState *node, List *ancestors, ExplainState *e
 	}
 }
 
+/*
+ * Decompress the next tuple from the batch indicated by batch state. The result is stored
+ * in batch_state->decompressed_slot_projected. An empty tuple is returned if the batch
+ * is entirely consumed.
+ */
 static void
 decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 								 DecompressBatchState *batch_state)
 {
-	TupleTableSlot *decompressed_slot = batch_state->decompressed_slot;
+	TupleTableSlot *decompressed_slot_scan = batch_state->decompressed_slot_scan;
+	TupleTableSlot *decompressed_slot_projected = batch_state->decompressed_slot_projected;
 
-	if (batch_state->current_batch_row >= batch_state->total_batch_rows)
+	Assert(decompressed_slot_scan != NULL);
+	Assert(decompressed_slot_projected != NULL);
+
+	while (true)
 	{
-		/*
-		 * Reached end of batch. Check that the columns that we're decompressing
-		 * row-by-row have also ended.
-		 */
-		batch_state->initialized = false;
+		if (batch_state->current_batch_row >= batch_state->total_batch_rows)
+		{
+			/*
+			 * Reached end of batch. Check that the columns that we're decompressing
+			 * row-by-row have also ended.
+			 */
+			batch_state->initialized = false;
+			for (int i = 0; i < chunk_state->num_columns; i++)
+			{
+				DecompressChunkColumnState *column = &batch_state->columns[i];
+				if (column->type == COMPRESSED_COLUMN && column->compressed.iterator)
+				{
+					DecompressResult result =
+						column->compressed.iterator->try_next(column->compressed.iterator);
+					if (!result.is_done)
+					{
+						elog(ERROR, "compressed column out of sync with batch counter");
+					}
+				}
+			}
+
+			/* Clear old slot state */
+			ExecClearTuple(decompressed_slot_projected);
+
+			return;
+		}
+
+		Assert(batch_state->initialized);
+		Assert(batch_state->total_batch_rows > 0);
+		Assert(batch_state->current_batch_row < batch_state->total_batch_rows);
+
 		for (int i = 0; i < chunk_state->num_columns; i++)
 		{
 			DecompressChunkColumnState *column = &batch_state->columns[i];
-			if (column->type == COMPRESSED_COLUMN && column->compressed.iterator)
+
+			if (column->type != COMPRESSED_COLUMN)
+			{
+				continue;
+			}
+
+			const AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
+			if (column->compressed.iterator != NULL)
 			{
 				DecompressResult result =
 					column->compressed.iterator->try_next(column->compressed.iterator);
-				if (!result.is_done)
+
+				if (result.is_done)
 				{
 					elog(ERROR, "compressed column out of sync with batch counter");
 				}
+
+				decompressed_slot_scan->tts_isnull[attr] = result.is_null;
+				decompressed_slot_scan->tts_values[attr] = result.val;
 			}
 		}
 
-		/* Clear old slot state */
-		ExecClearTuple(decompressed_slot);
+		batch_state->current_batch_row++;
 
-		return;
-	}
-
-	Assert(batch_state->initialized);
-	Assert(batch_state->total_batch_rows > 0);
-	Assert(batch_state->current_batch_row < batch_state->total_batch_rows);
-
-	for (int i = 0; i < chunk_state->num_columns; i++)
-	{
-		DecompressChunkColumnState *column = &batch_state->columns[i];
-
-		if (column->type != COMPRESSED_COLUMN)
+		/*
+		 * It's a virtual tuple slot, so no point in clearing/storing it
+		 * per each row, we can just update the values in-place. This saves
+		 * some CPU. We have to store it after ExecQual returns false (the tuple
+		 * didn't pass the filter), or after a new batch. The standard protocol
+		 * is to clear and set the tuple slot for each row, but our output tuple
+		 * slots are read-only, and the memory is owned by this node, so it is
+		 * safe to violate this protocol.
+		 */
+		Assert(TTS_IS_VIRTUAL(decompressed_slot_scan));
+		if (TTS_EMPTY(decompressed_slot_scan))
 		{
-			continue;
+			ExecStoreVirtualTuple(decompressed_slot_scan);
 		}
 
-		const AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
-		if (column->compressed.iterator != NULL)
-		{
-			DecompressResult result =
-				column->compressed.iterator->try_next(column->compressed.iterator);
+		/* Perform selection and projection if needed */
+		decompress_chunk_perform_select_project(&chunk_state->csstate,
+												decompressed_slot_scan,
+												decompressed_slot_projected);
 
-			if (result.is_done)
-			{
-				elog(ERROR, "compressed column out of sync with batch counter");
-			}
+		/* Non empty result, return it */
+		if (!TupIsNull(decompressed_slot_projected))
+			return;
 
-			decompressed_slot->tts_isnull[attr] = result.is_null;
-			decompressed_slot->tts_values[attr] = result.val;
-		}
+		/* Otherwise fetch the next tuple in the next iteration */
 	}
-
-	/*
-	 * It's a virtual tuple slot, so no point in clearing/storing it
-	 * per each row, we can just update the values in-place. This saves
-	 * some CPU. We have to store it after ExecQual returns false (the tuple
-	 * didn't pass the filter), or after a new batch. The standard protocol
-	 * is to clear and set the tuple slot for each row, but our output tuple
-	 * slots are read-only, and the memory is owned by this node, so it is
-	 * safe to violate this protocol.
-	 */
-	Assert(TTS_IS_VIRTUAL(decompressed_slot));
-	if (TTS_EMPTY(decompressed_slot))
-	{
-		ExecStoreVirtualTuple(decompressed_slot);
-	}
-
-	batch_state->current_batch_row++;
 }
 
 /*
@@ -1024,7 +1063,7 @@ decompress_chunk_create_tuple(DecompressChunkState *chunk_state, DecompressBatch
 		/* Decompress next tuple from batch */
 		decompress_next_tuple_from_batch(chunk_state, batch_state);
 
-		if (!TupIsNull(batch_state->decompressed_slot))
+		if (!TupIsNull(batch_state->decompressed_slot_projected))
 			return;
 
 		batch_state->initialized = false;
