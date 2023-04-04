@@ -534,9 +534,7 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 	{
 		if (chunk_state->csstate.ss.ps.ps_ProjInfo != NULL)
 		{
-			TupleTableSlot *slot = (chunk_state->csstate.ss.ps.ps_ProjInfo) ?
-									   chunk_state->csstate.ss.ps.ps_ProjInfo->pi_state.resultslot :
-									   chunk_state->csstate.ss.ss_ScanTupleSlot;
+			TupleTableSlot *slot = chunk_state->csstate.ss.ps.ps_ProjInfo->pi_state.resultslot;
 			TupleDesc tdesc = CreateTupleDescCopy(slot->tts_tupleDescriptor);
 			batch_state->decompressed_slot_projected =
 				MakeSingleTupleTableSlot(tdesc, slot->tts_ops);
