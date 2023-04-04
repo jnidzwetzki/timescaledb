@@ -579,8 +579,16 @@ initialize_batch(DecompressChunkState *chunk_state, DecompressBatchState *batch_
 					 * set it now.
 					 */
 					AttrNumber attr = AttrNumberGetAttrOffset(column->output_attno);
+
+					/* chunk_state->csstate.ss.ss_ScanTupleSlot->tts_tupleDescriptor is used here
+					 * because batch_state->decompressed_slot_scan->tts_tupleDescriptor is created
+					 * with CreateTupleDescCopy (and not with CreateTupleDescCopyConstr for
+					 * performance reasons). Therefore, the default values are not present in the
+					 * copied tts_tupleDescriptor.
+					 */
 					batch_state->decompressed_slot_scan->tts_values[attr] =
-						getmissingattr(batch_state->decompressed_slot_scan->tts_tupleDescriptor,
+						getmissingattr(chunk_state->csstate.ss.ss_ScanTupleSlot
+										   ->tts_tupleDescriptor,
 									   attr + 1,
 									   &batch_state->decompressed_slot_scan->tts_isnull[attr]);
 					break;
@@ -1030,8 +1038,8 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 
 		/* Perform selection and projection if needed */
 		bool is_valid_tuple = decompress_chunk_perform_select_project(&chunk_state->csstate,
-												decompressed_slot_scan,
-												decompressed_slot_projected);
+																	  decompressed_slot_scan,
+																	  decompressed_slot_projected);
 
 		/* Non empty result, return it */
 		if (is_valid_tuple)
