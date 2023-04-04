@@ -21,7 +21,7 @@ INSERT INTO test1 (time, x1, x2, x3, x4, x5) values('2000-01-01 01:00:00-00', 1,
 INSERT INTO test1 (time, x1, x2, x3, x4, x5) values('2000-01-01 02:00:00-00', 2, 1, 3, 3, 0);
 INSERT INTO test1 (time, x1, x2, x3, x4, x5) values('2000-01-01 03:00:00-00', 1, 2, 4, 4, 0);
 
-SELECT compress_chunk(c.schema_name|| '.' || c.table_name) FROM _timescaledb_catalog.chunk c, _timescaledb_catalog.hypertable ht where c.hypertable_id = ht.id and ht.table_name = 'test1' and c.compressed_chunk_id IS NULL ORDER BY c.table_name DESC;
+SELECT compress_chunk(i) FROM show_chunks('test1') i;
 
 -- test1 uses compress_segmentby='x1, x2, x5' and compress_orderby = 'time DESC, x3, x4'
 
@@ -50,6 +50,19 @@ SELECT * FROM test1 ORDER BY time ASC;
 SELECT * FROM test1 ORDER BY time ASC NULLS LAST;
 
 -- Should be optimized (backward scan)
+:PREFIX
+SELECT * FROM test1 ORDER BY time ASC NULLS FIRST;
+
+BEGIN TRANSACTION;
+INSERT INTO test1 (time, x1, x2, x3, x4, x5) values('2000-01-01 02:01:00-00', 10, 20, 30, 40, 50); 
+
+-- Should not be optimized because of the partially compressed chunk
+:PREFIX
+SELECT * FROM test1 ORDER BY time ASC NULLS FIRST;
+
+ROLLBACK;
+
+-- Should be optimized again
 :PREFIX
 SELECT * FROM test1 ORDER BY time ASC NULLS FIRST;
 
@@ -124,3 +137,22 @@ SELECT x4 FROM test1 WHERE x4 > 2 ORDER BY time DESC;
 
 -- Aggregation with count
 SELECT count(*) FROM test1;
+
+-- Test with default values
+ALTER TABLE test1 ADD COLUMN c1 int;
+ALTER TABLE test1 ADD COLUMN c2 int NOT NULL DEFAULT 42;
+SELECT * FROM test1 ORDER BY time DESC;
+
+-- Recompress
+SELECT decompress_chunk(i) FROM show_chunks('test1') i;
+SELECT compress_chunk(i) FROM show_chunks('test1') i;
+
+-- Test with a changed physical layout
+SELECT * FROM test1 ORDER BY time DESC;
+ALTER TABLE test1 DROP COLUMN c2;
+SELECT * FROM test1 ORDER BY time DESC;
+
+-- Test with a re-created column
+ALTER TABLE test1 ADD COLUMN c2 int NOT NULL DEFAULT 43;
+SELECT * FROM test1 ORDER BY time DESC;
+
