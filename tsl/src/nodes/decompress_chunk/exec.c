@@ -765,7 +765,7 @@ remove_top_tuple_and_decompress_next(DecompressChunkState *chunk_state)
 }
 
 /* Perform the projection and selection of the decompressed tuple */
-static void
+static bool pg_nodiscard
 decompress_chunk_perform_select_project(CustomScanState *node,
 										TupleTableSlot *decompressed_slot_scan,
 										TupleTableSlot *decompressed_slot_projected)
@@ -785,8 +785,7 @@ decompress_chunk_perform_select_project(CustomScanState *node,
 	if (node->ss.ps.qual && !ExecQual(node->ss.ps.qual, econtext))
 	{
 		InstrCountFiltered1(node, 1);
-		ExecClearTuple(decompressed_slot_projected);
-		return;
+		return false;
 	}
 
 	if (node->ss.ps.ps_ProjInfo)
@@ -794,6 +793,8 @@ decompress_chunk_perform_select_project(CustomScanState *node,
 		TupleTableSlot *projected = ExecProject(node->ss.ps.ps_ProjInfo);
 		ExecCopySlot(decompressed_slot_projected, projected);
 	}
+
+	return true;
 }
 
 static TupleTableSlot *
@@ -1030,12 +1031,12 @@ decompress_next_tuple_from_batch(DecompressChunkState *chunk_state,
 		}
 
 		/* Perform selection and projection if needed */
-		decompress_chunk_perform_select_project(&chunk_state->csstate,
+		bool is_valid_tuple = decompress_chunk_perform_select_project(&chunk_state->csstate,
 												decompressed_slot_scan,
 												decompressed_slot_projected);
 
 		/* Non empty result, return it */
-		if (!TupIsNull(decompressed_slot_projected))
+		if (is_valid_tuple)
 			return;
 
 		/* Otherwise fetch the next tuple in the next iteration */
