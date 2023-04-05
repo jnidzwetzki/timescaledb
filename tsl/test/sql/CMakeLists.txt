@@ -16,7 +16,6 @@ set(TEST_FILES
     compression_conflicts.sql
     compression_permissions.sql
     compression_qualpushdown.sql
-    compression_batch_merge.sql
     dist_param.sql
     dist_views.sql
     exp_cagg_monthly.sql
@@ -145,7 +144,7 @@ if(${PG_VERSION_MAJOR} EQUAL "15" AND ${PG_VERSION_MINOR} LESS "2")
 endif()
 
 set(TEST_TEMPLATES
-    compression_insert.sql.in cagg_union_view.sql.in plan_skip_scan.sql.in
+    compression_batch_merge.sql.in compression_insert.sql.in cagg_union_view.sql.in plan_skip_scan.sql.in
     transparent_decompression.sql.in
     transparent_decompression_ordered_index.sql.in)
 
