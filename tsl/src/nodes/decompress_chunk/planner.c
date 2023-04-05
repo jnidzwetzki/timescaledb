@@ -333,6 +333,34 @@ clause_has_compressed_attrs(Node *node, void *context)
 	return expression_tree_walker(node, clause_has_compressed_attrs, context);
 }
 
+/*
+ * Find the resno of the given attribute in the provided target list
+ */
+static AttrNumber
+find_attr_pos_in_tlist(List *targetlist, AttrNumber pos)
+{
+	ListCell *lc;
+
+	Assert(targetlist != NIL);
+	Assert(pos > 0 && pos != InvalidAttrNumber);
+
+	foreach (lc, targetlist)
+	{
+		TargetEntry *target = (TargetEntry *) lfirst(lc);
+
+		if (!IsA(target->expr, Var))
+			elog(ERROR, "compressed scan targetlist entries must be Vars");
+
+		Var *var = (Var *) target->expr;
+		AttrNumber compressed_attno = var->varattno;
+
+		if (compressed_attno == pos)
+			return target->resno;
+	}
+
+	elog(ERROR, "Unable to found var %d in targetlist", pos);
+}
+
 Plan *
 decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *path,
 							 List *decompressed_tlist, List *clauses, List *custom_plans)
@@ -415,6 +443,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 	 * paths of the Custom path, so we won't automatically get a phsyical tlist
 	 * here.
 	 */
+	bool target_list_compressed_is_physical = false;
 	if (compressed_path->pathtype == T_IndexOnlyScan)
 	{
 		compressed_scan->plan.targetlist = ((IndexPath *) compressed_path)->indexinfo->indextlist;
@@ -426,6 +455,7 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 		if (physical_tlist)
 		{
 			compressed_scan->plan.targetlist = physical_tlist;
+			target_list_compressed_is_physical = true;
 		}
 	}
 
@@ -512,10 +542,21 @@ decompress_chunk_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *pat
 			char *meta_col_name = strategy == BTLessStrategyNumber ?
 									  column_segment_min_name(i + 1) :
 									  column_segment_max_name(i + 1);
-			sortColIdx[i] = get_attnum(dcpath->info->compressed_rte->relid, meta_col_name);
 
-			if (sortColIdx[i] == InvalidAttrNumber)
+			AttrNumber attr_position =
+				get_attnum(dcpath->info->compressed_rte->relid, meta_col_name);
+
+			if (attr_position == InvalidAttrNumber)
 				elog(ERROR, "couldn't find metadata column \"%s\"", meta_col_name);
+
+			/* If the the target list is not based on the layout of the uncompressed chunk,
+			 * (see comment for physical_tlist above), adjust the position of the
+			 */
+			if (target_list_compressed_is_physical)
+				sortColIdx[i] = attr_position;
+			else
+				sortColIdx[i] =
+					find_attr_pos_in_tlist(compressed_scan->plan.targetlist, attr_position);
 		}
 
 		/* Now build the compressed batches sort node */
