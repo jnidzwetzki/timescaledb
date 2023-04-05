@@ -156,6 +156,7 @@ SELECT decompress_chunk(i) FROM show_chunks('test1') i;
 SELECT compress_chunk(i) FROM show_chunks('test1') i;
 
 -- Test with a changed physical layout
+-- build_physical_tlist() can not be used for the scan on the compressed chunk anymore
 SELECT * FROM test1 ORDER BY time DESC;
 ALTER TABLE test1 DROP COLUMN c2;
 SELECT * FROM test1 ORDER BY time DESC;

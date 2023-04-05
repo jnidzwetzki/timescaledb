@@ -530,6 +530,7 @@ SELECT compress_chunk(i) FROM show_chunks('test1') i;
 (1 row)
 
 -- Test with a changed physical layout
+-- build_physical_tlist() can not be used for the scan on the compressed chunk anymore
 SELECT * FROM test1 ORDER BY time DESC;
              time             | x1 | x2 | x3 | x4 | x5 | c1 | c2 
 ------------------------------+----+----+----+----+----+----+----
