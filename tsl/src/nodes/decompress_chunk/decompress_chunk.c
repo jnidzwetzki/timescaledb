@@ -52,12 +52,12 @@ typedef struct SortInfo
 	bool reverse;
 } SortInfo;
 
-typedef enum MergeChunkResult
+typedef enum MergeBatchResult
 {
 	MERGE_NOT_POSSIBLE,
 	SCAN_FORWARD,
 	SCAN_BACKWARD
-} MergeChunkResult;
+} MergeBatchResult;
 
 static RangeTblEntry *decompress_chunk_make_rte(Oid compressed_relid, LOCKMODE lockmode);
 static void create_compressed_scan_paths(PlannerInfo *root, RelOptInfo *compressed_rel,
@@ -395,8 +395,12 @@ cost_decompress_chunk_merge(PlannerInfo *root, DecompressChunkPath *dcpath, Path
 	if (sort_path.rows > 0)
 		dcpath->cpath.path.startup_cost = sort_path.total_cost / sort_path.rows;
 
+	// TODO * TODO * TODO * TODO
+	// Wait for cost model PR merge (https://github.com/timescale/timescaledb/pull/5505)
+	// before the final cost model can be created
+	// TODO * TODO * TODO * TODO
+
 	/* total_cost is cost for fetching all tuples */
-	// TODO: Wait for cost model fix
 	// dcpath->cpath.path.total_cost =
 	//	sort_path.total_cost + dcpath->cpath.path.rows * DECOMPRESS_CHUNK_HEAP_MERGE_CPU_TUPLE_COST;
 
@@ -404,11 +408,64 @@ cost_decompress_chunk_merge(PlannerInfo *root, DecompressChunkPath *dcpath, Path
 }
 
 /*
- * Is the query by ordering a prefix of the compression order by, we don't need to sort
- * sort the tuples. We can perform a merge append of the segments. This function checks
- * if the compression ordering and the query ordering are compatible.
+ * If the query 'order by' is prefix of the compression 'order by' (or equal), we can exploit
+ * the ordering of the individual batches to create a total ordered result without resorting
+ * the tuples. This speeds up all queries that use this ordering (because no sort node is
+ * needed). In particular, queries that use a LIMIT are speed-up because only the top elements
+ * of the affected batches needs to be decompressed. Without the optimization, the entire batches
+ * are decompressed, sorted, and then the top elements are taken from the result.
+ *
+ * The idea is to do something similar to the MergeAppend node; a BinaryHeap is used
+ * to merge the per segment by column sorted individual batches into a sorted result. So, we end
+ * up which a data flow which looks as follows:
+ *
+ * DecompressChunk
+ *   * Decompress Batch 1
+ *   * Decompress Batch 2
+ *   * Decompress Batch 3
+ *       [....]
+ *   * Decompress Batch N
+ *
+ * Using the presorted batches, we are able to open these batches dynamically. If we don't presort
+ * them, we would have to open all batches at the same time. This would be similar to the work the
+ * MergeAppend does, but this is not needed in our case and we could reduce the size of the heap and
+ * the amount of parallel open batches.
+ *
+ * The algorithm works as follows:
+ *
+ *   (1) A sort node is placed below the decompress scan node and on top of the scan
+ *       on the compressed chunk. This sort node uses the min/max values of the 'order by'
+ *       columns from the metadata of the batch to get them into an order which can be
+ *       used to merge them.
+ *
+ *       [Scan on compressed chunk] -> [Sort on min/max values] -> [Decompress and merge]
+ *
+ *       For example, the batches are sorted on the min value of the 'order by' metadata
+ *       column: [0, 3] [0, 5] [3, 7] [6, 10]
+ *
+ *   (2) The decompress chunk node initializes a binary heap, opens the first batch and
+ *       decompresses the first tuple from the batch. The tuple is put on the heap. In addition
+ *       the opened batch is marked as the most recent batch (MRB).
+ *
+ *   (3) As soon as a tuple is requested from the heap, the following steps are performed:
+ *       (3a) If the heap is empty, we are done.
+ *       (3b) The top tuple from the heap is taken. It is checked if this tuple is from the
+ *            MRB. If this is the case, the next batch is opened, the top tuple is decompressed,
+ *            placed on the batch, and this batch is marked as MRB. This is repeated until the
+ *            top tuple from the heap is not from the MRB. This is done to ensure we have opened
+ *            all relevant batches (and one ahead) which might contain the most recent tuple
+ *            are opened and placed on the heap.
+ *
+ *            In the example above, the first three batches are opened because the first two
+ *            batches might contain tuples with a value of 0.
+ *       (3c) The top element from the heap is removed, the next tuple from the batch is
+ *            decompressed (if present) and placed on the heap.
+ *       (3d) The former top tuple of the heap is returned.
+ *
+ * This function checks if the compression 'order by' and the query 'order by' are
+ * compatible and the optimization can be used.
  */
-static MergeChunkResult
+static MergeBatchResult
 is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Chunk *chunk)
 {
 	int pk_index;
@@ -419,8 +476,9 @@ is_able_to_use_segment_merge_append(PlannerInfo *root, CompressionInfo *info, Ch
 	List *pathkeys = root->query_pathkeys;
 	FormData_hypertable_compression *ci;
 	ListCell *lc = list_head(pathkeys);
-	MergeChunkResult merge_result = SCAN_FORWARD;
+	MergeBatchResult merge_result = SCAN_FORWARD;
 
+	/* Ensure that we have path keys and the chunk is ordered */
 	if (pathkeys == NIL || ts_chunk_is_unordered(chunk) || ts_chunk_is_partial(chunk))
 		return MERGE_NOT_POSSIBLE;
 
@@ -638,7 +696,7 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 		/*
 		 * Compression segment append optimization. Perform a merge append of the involved segments
 		 */
-		MergeChunkResult merge_result = is_able_to_use_segment_merge_append(root, info, chunk);
+		MergeBatchResult merge_result = is_able_to_use_segment_merge_append(root, info, chunk);
 		if (ts_guc_enable_decompression_heap_merge && merge_result != MERGE_NOT_POSSIBLE)
 		{
 			DecompressChunkPath *dcpath = copy_decompress_chunk_path((DecompressChunkPath *) path);
