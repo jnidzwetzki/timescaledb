@@ -180,3 +180,77 @@ SELECT x2, x1, c2, time FROM test1 ORDER BY time DESC;
 -- Test with projection, constants and recreated column
 EXPLAIN (verbose) SELECT 1 as one, 2 as two, 3 as three, x2, x1, c2, time FROM test1 ORDER BY time DESC;
 SELECT 1 as one, 2 as two, 3 as three, x2, x1, c2, time FROM test1 ORDER BY time DESC;
+
+
+------
+-- Tests on a larger relation
+------
+
+CREATE TABLE sensor_data (
+time timestamptz NOT NULL,
+sensor_id integer NOT NULL,
+cpu double precision NULL,
+temperature double precision NULL);
+
+SELECT FROM create_hypertable('sensor_data','time');
+
+INSERT INTO sensor_data
+SELECT
+time + (INTERVAL '1 minute' * random()) AS time,
+sensor_id,
+random() AS cpu,
+random() * 100 AS temperature
+FROM
+generate_series('1980-01-01 00:00:00-00', '1980-02-01 00:00:00-00', INTERVAL '10 minute') AS g1(time),
+generate_series(1, 100, 1 ) AS g2(sensor_id)
+ORDER BY
+time;
+
+ALTER TABLE sensor_data SET (timescaledb.compress, timescaledb.compress_segmentby='sensor_id', timescaledb.compress_orderby = 'time DESC');
+
+SELECT add_compression_policy('sensor_data','1 minute'::INTERVAL);
+
+SELECT compress_chunk(i) FROM show_chunks('sensor_data') i;
+
+-- Verify same order without and with the optimization
+SET timescaledb.enable_decompression_heap_merge = 0;
+-- EXPLAIN is not used here, because a parallel plan (with different 'acutal tuples') can be chosen. 
+SELECT * INTO TEMP TABLE sensor_data_temp1 FROM sensor_data ORDER BY time DESC;
+
+SET timescaledb.enable_decompression_heap_merge = 1;
+:PREFIX
+SELECT * INTO TEMP TABLE sensor_data_temp2 FROM sensor_data ORDER BY time DESC;
+
+ALTER TABLE sensor_data_temp1 ADD COLUMN new_id SERIAL PRIMARY KEY;
+ALTER TABLE sensor_data_temp2 ADD COLUMN new_id SERIAL PRIMARY KEY;
+
+CREATE TEMP TABLE sensor_data_temp3 AS (
+    SELECT * FROM sensor_data_temp1 UNION ALL SELECT * FROM sensor_data_temp2
+);
+
+SELECT COUNT(*) FROM sensor_data_temp3 GROUP BY time, new_id HAVING COUNT(*) != 2;
+
+
+DROP TABLE sensor_data_temp1;
+DROP TABLE sensor_data_temp2;
+DROP TABLE sensor_data_temp3;
+
+-- Same test for limit 100
+-- Verify same order without and with the optimization
+
+SET timescaledb.enable_decompression_heap_merge = 0;
+-- EXPLAIN is not used here, because a parallel plan (with different 'acutal tuples') can be chosen. 
+SELECT * INTO TEMP TABLE sensor_data_temp1 FROM sensor_data ORDER BY time DESC LIMIT 100;
+
+SET timescaledb.enable_decompression_heap_merge = 1;
+:PREFIX
+SELECT * INTO TEMP TABLE sensor_data_temp2 FROM sensor_data ORDER BY time DESC LIMIT 100;
+
+ALTER TABLE sensor_data_temp1 ADD COLUMN new_id SERIAL PRIMARY KEY;
+ALTER TABLE sensor_data_temp2 ADD COLUMN new_id SERIAL PRIMARY KEY;
+
+CREATE TEMP TABLE sensor_data_temp3 AS (
+    SELECT * FROM sensor_data_temp1 UNION ALL SELECT * FROM sensor_data_temp2
+);
+
+SELECT COUNT(*) FROM sensor_data_temp3 GROUP BY time, new_id HAVING COUNT(*) != 2;
