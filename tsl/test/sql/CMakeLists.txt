@@ -145,7 +145,10 @@ if(${PG_VERSION_MAJOR} EQUAL "15" AND ${PG_VERSION_MINOR} LESS "2")
 endif()
 
 set(TEST_TEMPLATES
-    compression_batch_merge.sql.in compression_insert.sql.in cagg_union_view.sql.in plan_skip_scan.sql.in
+    compression_batch_merge.sql.in
+    compression_insert.sql.in
+    cagg_union_view.sql.in
+    plan_skip_scan.sql.in
     transparent_decompression.sql.in
     transparent_decompression_ordered_index.sql.in)
 

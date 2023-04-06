@@ -358,7 +358,7 @@ find_attr_pos_in_tlist(List *targetlist, AttrNumber pos)
 			return target->resno;
 	}
 
-	elog(ERROR, "Unable to found var %d in targetlist", pos);
+	elog(ERROR, "Unable to locate var %d in targetlist", pos);
 }
 
 Plan *

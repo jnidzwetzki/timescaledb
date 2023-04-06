@@ -8025,20 +8025,25 @@ ORDER BY c.id;
 
 -- should not have ordered DecompressChunk path because segmentby columns are not part of pathkeys
 :PREFIX SELECT * FROM metrics_ordered ORDER BY time DESC LIMIT 10;
-                                            QUERY PLAN                                            
---------------------------------------------------------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Limit (actual rows=10 loops=1)
-   ->  Sort (actual rows=10 loops=1)
-         Sort Key: _hyper_11_28_chunk."time" DESC
-         Sort Method: top-N heapsort 
-         ->  Append (actual rows=6840 loops=1)
-               ->  Custom Scan (DecompressChunk) on _hyper_11_28_chunk (actual rows=2520 loops=1)
+   ->  Custom Scan (ChunkAppend) on metrics_ordered (actual rows=10 loops=1)
+         Order: metrics_ordered."time" DESC
+         ->  Custom Scan (DecompressChunk) on _hyper_11_28_chunk (actual rows=10 loops=1)
+               ->  Sort (actual rows=5 loops=1)
+                     Sort Key: compress_hyper_12_31_chunk._ts_meta_max_1 DESC
+                     Sort Method: quicksort 
                      ->  Seq Scan on compress_hyper_12_31_chunk (actual rows=5 loops=1)
-               ->  Custom Scan (DecompressChunk) on _hyper_11_27_chunk (actual rows=2520 loops=1)
-                     ->  Seq Scan on compress_hyper_12_30_chunk (actual rows=5 loops=1)
-               ->  Custom Scan (DecompressChunk) on _hyper_11_26_chunk (actual rows=1800 loops=1)
-                     ->  Seq Scan on compress_hyper_12_29_chunk (actual rows=5 loops=1)
-(11 rows)
+         ->  Custom Scan (DecompressChunk) on _hyper_11_27_chunk (never executed)
+               ->  Sort (never executed)
+                     Sort Key: compress_hyper_12_30_chunk._ts_meta_max_1 DESC
+                     ->  Seq Scan on compress_hyper_12_30_chunk (never executed)
+         ->  Custom Scan (DecompressChunk) on _hyper_11_26_chunk (never executed)
+               ->  Sort (never executed)
+                     Sort Key: compress_hyper_12_29_chunk._ts_meta_max_1 DESC
+                     ->  Seq Scan on compress_hyper_12_29_chunk (never executed)
+(16 rows)
 
 -- should have ordered DecompressChunk path because segmentby columns have equality constraints
 :PREFIX SELECT * FROM metrics_ordered WHERE device_id = 1 AND device_id_peer = 3 ORDER BY time DESC LIMIT 10;
@@ -8049,21 +8054,21 @@ ORDER BY c.id;
          Order: metrics_ordered."time" DESC
          ->  Custom Scan (DecompressChunk) on _hyper_11_28_chunk (actual rows=0 loops=1)
                ->  Sort (actual rows=0 loops=1)
-                     Sort Key: compress_hyper_12_31_chunk._ts_meta_sequence_num
+                     Sort Key: compress_hyper_12_31_chunk._ts_meta_max_1 DESC
                      Sort Method: quicksort 
                      ->  Seq Scan on compress_hyper_12_31_chunk (actual rows=0 loops=1)
                            Filter: ((device_id = 1) AND (device_id_peer = 3))
                            Rows Removed by Filter: 5
          ->  Custom Scan (DecompressChunk) on _hyper_11_27_chunk (actual rows=0 loops=1)
                ->  Sort (actual rows=0 loops=1)
-                     Sort Key: compress_hyper_12_30_chunk._ts_meta_sequence_num
+                     Sort Key: compress_hyper_12_30_chunk._ts_meta_max_1 DESC
                      Sort Method: quicksort 
                      ->  Seq Scan on compress_hyper_12_30_chunk (actual rows=0 loops=1)
                            Filter: ((device_id = 1) AND (device_id_peer = 3))
                            Rows Removed by Filter: 5
          ->  Custom Scan (DecompressChunk) on _hyper_11_26_chunk (actual rows=0 loops=1)
                ->  Sort (actual rows=0 loops=1)
-                     Sort Key: compress_hyper_12_29_chunk._ts_meta_sequence_num
+                     Sort Key: compress_hyper_12_29_chunk._ts_meta_max_1 DESC
                      Sort Method: quicksort 
                      ->  Seq Scan on compress_hyper_12_29_chunk (actual rows=0 loops=1)
                            Filter: ((device_id = 1) AND (device_id_peer = 3))
@@ -8089,21 +8094,21 @@ ORDER BY c.id;
                      Hypertables excluded during runtime: 0
                      ->  Custom Scan (DecompressChunk) on _hyper_11_28_chunk m_1 (actual rows=0 loops=6840)
                            ->  Sort (actual rows=0 loops=6840)
-                                 Sort Key: compress_hyper_12_31_chunk_1._ts_meta_sequence_num
+                                 Sort Key: compress_hyper_12_31_chunk_1._ts_meta_max_1 DESC
                                  Sort Method: quicksort 
                                  ->  Seq Scan on compress_hyper_12_31_chunk compress_hyper_12_31_chunk_1 (actual rows=0 loops=6840)
                                        Filter: ((device_id = d_1.device_id) AND (device_id_peer = 3))
                                        Rows Removed by Filter: 5
                      ->  Custom Scan (DecompressChunk) on _hyper_11_27_chunk m_2 (actual rows=0 loops=6840)
                            ->  Sort (actual rows=0 loops=6840)
-                                 Sort Key: compress_hyper_12_30_chunk_1._ts_meta_sequence_num
+                                 Sort Key: compress_hyper_12_30_chunk_1._ts_meta_max_1 DESC
                                  Sort Method: quicksort 
                                  ->  Seq Scan on compress_hyper_12_30_chunk compress_hyper_12_30_chunk_1 (actual rows=0 loops=6840)
                                        Filter: ((device_id = d_1.device_id) AND (device_id_peer = 3))
                                        Rows Removed by Filter: 5
                      ->  Custom Scan (DecompressChunk) on _hyper_11_26_chunk m_3 (actual rows=0 loops=6840)
                            ->  Sort (actual rows=0 loops=6840)
-                                 Sort Key: compress_hyper_12_29_chunk_1._ts_meta_sequence_num
+                                 Sort Key: compress_hyper_12_29_chunk_1._ts_meta_max_1 DESC
                                  Sort Method: quicksort 
                                  ->  Seq Scan on compress_hyper_12_29_chunk compress_hyper_12_29_chunk_1 (actual rows=0 loops=6840)
                                        Filter: ((device_id = d_1.device_id) AND (device_id_peer = 3))
