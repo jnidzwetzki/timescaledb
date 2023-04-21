@@ -801,6 +801,17 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 					continue;
 			}
 
+
+			// make make_partition_pruneinfo() happy
+			root->append_rel_array[info->compressed_rel->relid] =
+				root->append_rel_array[info->chunk_rel->relid];
+
+			RelOptInfo *newrel = palloc(sizeof(RelOptInfo));
+			memcpy(newrel, info->chunk_rel, sizeof(RelOptInfo));
+			newrel->relid = info->compressed_rel->relid;
+			path->parent = newrel;
+
+			Assert(path->parent->relid != uncompressed_path->parent->relid);
 			path = (Path *) create_append_path_compat(root,
 													  chunk_rel,
 													  list_make2(path, uncompressed_path),
