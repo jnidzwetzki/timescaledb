@@ -1417,7 +1417,7 @@ ts_plan_expand_hypertable_chunks(Hypertable *ht, PlannerInfo *root, RelOptInfo *
 	 * partitionwise aggregation. */
 
 	if ((ts_guc_enable_partitionwise_aggregation &&
-		 !has_partialize_function((Node *) root->parse->targetList, TS_DO_NOT_FIX_AGGSPLIT)) ||
+		 !has_partialize_function((Node *) root->parse->targetList, TS_DO_NOT_FIX_AGGSPLIT) && num_chunks > 0) ||
 		hypertable_is_distributed(ht))
 	{
 		enable_partitionwise_aggregate = true; // FIXME

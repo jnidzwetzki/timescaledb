@@ -1513,6 +1513,11 @@ replace_hypertable_modify_paths(PlannerInfo *root, List *pathlist, RelOptInfo *i
 }
 
 static void
+create_vector_paths(PlannerInfo *root, List *pathlist)
+{
+}
+
+static void
 timescaledb_create_upper_paths_hook(PlannerInfo *root, UpperRelationKind stage,
 									RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
@@ -1563,6 +1568,8 @@ timescaledb_create_upper_paths_hook(PlannerInfo *root, UpperRelationKind stage,
 
 		if (parse->hasAggs)
 			ts_preprocess_first_last_aggregates(root, root->processed_tlist);
+
+		create_vector_paths(root, output_rel->pathlist);
 	}
 }
 
