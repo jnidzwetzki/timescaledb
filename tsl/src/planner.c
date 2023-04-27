@@ -27,6 +27,7 @@
 #include "nodes/compress_dml/compress_dml.h"
 #include "nodes/frozen_chunk_dml/frozen_chunk_dml.h"
 #include "nodes/decompress_chunk/decompress_chunk.h"
+#include "nodes/decompress_chunk_vector/decompress_chunk_vector.h"
 #include "nodes/data_node_dispatch.h"
 #include "nodes/data_node_copy.h"
 #include "nodes/gapfill/gapfill.h"
@@ -91,6 +92,10 @@ tsl_create_upper_paths_hook(PlannerInfo *root, UpperRelationKind stage, RelOptIn
 		case UPPERREL_GROUP_AGG:
 			if (input_reltype != TS_REL_HYPERTABLE_CHILD)
 				plan_add_gapfill(root, output_rel);
+
+			if (output_rel != NULL)
+				ts_decompress_vector_modify_paths(root, input_rel, output_rel);
+
 			break;
 		case UPPERREL_WINDOW:
 			if (IsA(linitial(input_rel->pathlist), CustomPath))

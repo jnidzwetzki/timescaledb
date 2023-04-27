@@ -801,7 +801,6 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 					continue;
 			}
 
-
 			// make make_partition_pruneinfo() happy
 			root->append_rel_array[info->compressed_rel->relid] =
 				root->append_rel_array[info->chunk_rel->relid];
