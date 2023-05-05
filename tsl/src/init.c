@@ -40,6 +40,7 @@
 #include "hypertable.h"
 #include "license_guc.h"
 #include "nodes/decompress_chunk/planner.h"
+#include "nodes/decompress_chunk_vector/planner.h"
 #include "nodes/skip_scan/skip_scan.h"
 #include "nodes/gapfill/gapfill_functions.h"
 #include "partialize_finalize.h"
@@ -268,6 +269,7 @@ ts_module_init(PG_FUNCTION_ARGS)
 
 	_continuous_aggs_cache_inval_init();
 	_decompress_chunk_init();
+	_decompress_chunk_vector_init();
 	_skip_scan_init();
 	_remote_connection_cache_init();
 	_remote_dist_txn_init();

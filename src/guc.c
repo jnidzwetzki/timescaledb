@@ -456,9 +456,9 @@ _guc_init(void)
 							 NULL);
 
 	DefineCustomBoolVariable("timescaledb.enable_partitionwise_aggregation",
-							 "Enable async query execution on data nodes",
-							 "Enable optimization that runs remote queries asynchronously"
-							 "across data nodes",
+							 "Enable partition-wise aggregation per chunk",
+							 "Enable the partition-wise aggregation pushdown to the"
+							 "chunk level",
 							 &ts_guc_enable_partitionwise_aggregation,
 							 true,
 							 PGC_USERSET,

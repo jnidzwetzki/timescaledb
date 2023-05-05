@@ -13,6 +13,11 @@
 #include "chunk.h"
 #include "hypertable.h"
 
+typedef struct DecompressChunkVectorPath
+{
+	CustomPath cpath;
+} DecompressChunkVectorPath;
+
 extern void ts_decompress_vector_modify_paths(PlannerInfo *root, RelOptInfo *input_rel,
 											  RelOptInfo *output_rel);
 
