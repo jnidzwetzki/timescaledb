@@ -35,11 +35,32 @@
 static void
 handle_agg_sub_path(Path *agg_sub_path)
 {
+	List *subpaths;
+
 	Assert(agg_sub_path != NULL);
 
-	// Get Paths from Append
-	// Check Paths
-	// Replace with a DecompressChunkVectorPath if ts_is_decompress_chunk_path is true
+	if (IsA(agg_sub_path, AppendPath))
+	{
+		AppendPath *append = castNode(AppendPath, agg_sub_path);
+		subpaths = append->subpaths;
+	}
+	else if (IsA(agg_sub_path, MergeAppendPath))
+	{
+		// TODO
+	}
+	else
+	{
+		/* Unsupported sub path */
+		return;
+	}
+
+	/* No subpaths available */
+	if (list_length(subpaths) < 1)
+		return;
+
+	// Get Paths from Append and MergeAppendPath and ChunkAppend (?)
+	// Check Paths for partial aggegate on top of ts_is_decompress_chunk_path
+	// Replace with a DecompressChunkVectorPath
 }
 
 /*
