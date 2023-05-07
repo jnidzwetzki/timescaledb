@@ -35,18 +35,29 @@
 static void
 handle_agg_sub_path(Path *agg_sub_path)
 {
-	List *subpaths;
+	List *subpaths = NIL;
 
 	Assert(agg_sub_path != NULL);
 
 	if (IsA(agg_sub_path, AppendPath))
 	{
-		AppendPath *append = castNode(AppendPath, agg_sub_path);
-		subpaths = append->subpaths;
+		AppendPath *append_path = castNode(AppendPath, agg_sub_path);
+		subpaths = append_path->subpaths;
 	}
 	else if (IsA(agg_sub_path, MergeAppendPath))
 	{
-		// TODO
+		MergeAppendPath *merge_append_path = castNode(MergeAppendPath, agg_sub_path);
+		subpaths = merge_append_path->subpaths;
+	}
+	else if (IsA(agg_sub_path, GatherPath))
+	{
+		/* Handle parallel plans with a gather node on top */
+		GatherPath *gather_path = castNode(GatherPath, agg_sub_path);
+
+		// TODO: Maybe extract AGGPATH subpath also here
+
+		if (gather_path->subpath != NULL)
+			handle_agg_sub_path(gather_path->subpath);
 	}
 	else
 	{
@@ -58,7 +69,8 @@ handle_agg_sub_path(Path *agg_sub_path)
 	if (list_length(subpaths) < 1)
 		return;
 
-	// Get Paths from Append and MergeAppendPath and ChunkAppend (?)
+	// Get Paths from Append and MergeAppendPath
+	// Check for disabled optimizations (ChunkAppend)
 	// Check Paths for partial aggegate on top of ts_is_decompress_chunk_path
 	// Replace with a DecompressChunkVectorPath
 }
@@ -68,7 +80,7 @@ handle_agg_sub_path(Path *agg_sub_path)
  * and replace it by our DecompressChunkVector node.
  *
  * For example
- *
+ * ->  Append  (cost=253.00..2036.08 rows=5 width=8) (actual time=13.610..180.192 rows=5 loops=1)
  *    ->  Partial Aggregate  (cost=304.18..304.19 rows=1 width=8)
  *           ->  Custom Scan (DecompressChunk) on _hyper_34_35_chunk  (cost=0.08..9.18 rows=118000
  * width=4)
@@ -76,7 +88,7 @@ handle_agg_sub_path(Path *agg_sub_path)
  * width=8)
  *
  * Will be replaced by
- *
+ * ->  Append  (cost=253.00..2036.08 rows=5 width=8) (actual time=13.610..180.192 rows=5 loops=1)
  *    ->  Custom Scan (VectorDecompressChunk) on _hyper_34_35_chunk  (cost=0.08..9.18 rows=118000
  * width=4)
  *           ->  Parallel Seq Scan on compress_hyper_35_42_chunk  (cost=0.00..9.18 rows=118 width=8)
