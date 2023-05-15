@@ -1417,11 +1417,12 @@ ts_plan_expand_hypertable_chunks(Hypertable *ht, PlannerInfo *root, RelOptInfo *
 	 * partitionwise aggregation. */
 
 	if ((ts_guc_enable_partitionwise_aggregation &&
-		 !has_partialize_function((Node *) root->parse->targetList, TS_DO_NOT_FIX_AGGSPLIT) &&
-		 num_chunks > 0) ||
+		 !has_partialize_function((Node *) root->parse->targetList, TS_DO_NOT_FIX_AGGSPLIT)) ||
 		hypertable_is_distributed(ht))
 	{
-		enable_partitionwise_aggregate = true; // FIXME
+		if(! hypertable_is_distributed(ht))
+			enable_partitionwise_aggregate = true;
+
 		build_hypertable_partition_info(ht, root, rel, list_length(inh_oids));
 	}
 
