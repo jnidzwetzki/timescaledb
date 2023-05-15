@@ -1423,6 +1423,9 @@ ts_plan_expand_hypertable_chunks(Hypertable *ht, PlannerInfo *root, RelOptInfo *
 		if(! hypertable_is_distributed(ht))
 			enable_partitionwise_aggregate = true;
 
+		// Fixme
+		enable_partition_pruning = false;
+
 		build_hypertable_partition_info(ht, root, rel, list_length(inh_oids));
 	}
 
