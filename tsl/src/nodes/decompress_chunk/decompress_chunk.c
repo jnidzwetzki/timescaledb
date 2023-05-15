@@ -883,6 +883,12 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 						continue;
 				}
 
+				// Fix relid
+				RelOptInfo *newrel = palloc(sizeof(RelOptInfo));
+				memcpy(newrel, info->chunk_rel, sizeof(RelOptInfo));
+				newrel->relid = info->compressed_rel->relid;
+				path->parent = newrel;
+
 				path = (Path *) create_append_path_compat(root,
 														  chunk_rel,
 														  NIL,
