@@ -32,22 +32,101 @@
 #include "nodes/decompress_chunk_vector/decompress_chunk_vector.h"
 #include "utils.h"
 
+/* Check if we can vectorize the given path */
+static bool
+is_vectorizable_agg_path(Path *path)
+{
+	if (!IsA(path, AggPath))
+		return false;
+
+	AggPath *agg_path = castNode(AggPath, path);
+
+	bool is_plain_agg = (agg_path->aggstrategy == AGG_PLAIN);
+	if (!is_plain_agg)
+		return false;
+
+	bool is_decompress_chunk = ts_is_decompress_chunk_path(agg_path->subpath);
+	if (!is_decompress_chunk)
+		return false;
+
+	/* We currently handle only one agg function per node */
+	if (list_length(agg_path->path.pathtarget->exprs) != 1)
+		return false;
+
+	/* Only sum on int 4 is supported at the moment */
+	Node *expr_node = linitial(agg_path->path.pathtarget->exprs);
+	if (!IsA(expr_node, Aggref))
+		return false;
+
+	Aggref *aggref = castNode(Aggref, expr_node);
+
+	if (aggref->aggfnoid != F_SUM_INT4)
+		return false;
+
+	return true;
+}
+
+/* Generate cheaper path with our vector node */
+static void
+add_vector_path_append(AppendPath *append_path, Path *path)
+{
+	Assert(path != NULL);
+	Assert(IsA(path, AggPath));
+
+	AggPath *agg_path = castNode(AggPath, path);
+}
+
+static void
+add_vector_path_merge_append(MergeAppendPath *merge_append_path, Path *path)
+{
+	Assert(path != NULL);
+	Assert(IsA(path, AggPath));
+
+	AggPath *agg_path = castNode(AggPath, path);
+}
+
 static void
 handle_agg_sub_path(Path *agg_sub_path)
 {
-	List *subpaths = NIL;
-
 	Assert(agg_sub_path != NULL);
 
 	if (IsA(agg_sub_path, AppendPath))
 	{
 		AppendPath *append_path = castNode(AppendPath, agg_sub_path);
-		subpaths = append_path->subpaths;
+		List *subpaths = append_path->subpaths;
+
+		/* No subpaths available */
+		if (list_length(subpaths) < 1)
+			return;
+
+		ListCell *lc;
+
+		/* Check if subpath can be vectorized */
+		foreach (lc, subpaths)
+		{
+			Path *sub_path = lfirst(lc);
+			if (is_vectorizable_agg_path(sub_path))
+				add_vector_path_append(append_path, sub_path);
+		}
 	}
 	else if (IsA(agg_sub_path, MergeAppendPath))
 	{
 		MergeAppendPath *merge_append_path = castNode(MergeAppendPath, agg_sub_path);
-		subpaths = merge_append_path->subpaths;
+		List *subpaths = merge_append_path->subpaths;
+
+		/* No subpaths available */
+		if (list_length(subpaths) < 1)
+			return;
+
+		ListCell *lc;
+
+		/* Check if subpath can be vectorized */
+		foreach (lc, subpaths)
+		{
+			Path *sub_path = lfirst(lc);
+			if (is_vectorizable_agg_path(sub_path))
+				add_vector_path_merge_append(merge_append_path, sub_path);
+		}
 	}
 	else if (IsA(agg_sub_path, GatherPath))
 	{
@@ -59,20 +138,6 @@ handle_agg_sub_path(Path *agg_sub_path)
 		if (gather_path->subpath != NULL)
 			handle_agg_sub_path(gather_path->subpath);
 	}
-	else
-	{
-		/* Unsupported sub path */
-		return;
-	}
-
-	/* No subpaths available */
-	if (list_length(subpaths) < 1)
-		return;
-
-	// Get Paths from Append and MergeAppendPath
-	// Check for disabled optimizations (ChunkAppend)
-	// Check Paths for partial aggegate on top of ts_is_decompress_chunk_path
-	// Replace with a DecompressChunkVectorPath
 }
 
 /*
