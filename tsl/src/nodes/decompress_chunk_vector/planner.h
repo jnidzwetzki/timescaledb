@@ -10,7 +10,8 @@
 #include <postgres.h>
 
 extern Plan *decompress_chunk_vector_plan_create(PlannerInfo *root, RelOptInfo *rel,
-												 CustomPath *path);
+												 CustomPath *path, List *decompressed_tlist,
+												 List *clauses, List *custom_plans);
 
 extern void _decompress_chunk_vector_init(void);
 

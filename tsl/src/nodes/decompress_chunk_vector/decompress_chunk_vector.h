@@ -12,10 +12,12 @@
 
 #include "chunk.h"
 #include "hypertable.h"
+#include "nodes/decompress_chunk/decompress_chunk.h"
 
 typedef struct DecompressChunkVectorPath
 {
 	CustomPath cpath;
+	CompressionInfo *info;
 } DecompressChunkVectorPath;
 
 extern void ts_decompress_vector_modify_paths(PlannerInfo *root, RelOptInfo *input_rel,

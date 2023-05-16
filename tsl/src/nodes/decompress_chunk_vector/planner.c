@@ -38,15 +38,28 @@ _decompress_chunk_vector_init(void)
 }
 
 Plan *
-decompress_chunk_vector_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *path)
+decompress_chunk_vector_plan_create(PlannerInfo *root, RelOptInfo *rel, CustomPath *path,
+									List *decompressed_tlist, List *clauses, List *custom_plans)
 {
-	// DecompressChunkVectorPath *dcpath = (DecompressChunkVectorPath *) path;
+	DecompressChunkVectorPath *dcpath = (DecompressChunkVectorPath *) path;
 	CustomScan *decompress_plan = makeNode(CustomScan);
 
 	// TODO: Copy information from path to plan
-	// Assert(dcpath);
 
+	decompress_plan->flags = path->flags;
 	decompress_plan->methods = &decompress_chunk_plan_methods;
+
+	/* Relid */
+	decompress_plan->scan.scanrelid = dcpath->info->chunk_rel->relid;
+
+	/* Targetlist */
+	decompress_plan->scan.plan.targetlist = decompressed_tlist;
+	decompress_plan->custom_scan_tlist = decompressed_tlist;
+
+	// FIXME "Aggref found in non-Agg plan node"
+	// decompress_plan->custom_scan_tlist = NIL;
+
+	decompress_plan->custom_plans = custom_plans;
 
 	return &decompress_plan->scan.plan;
 }

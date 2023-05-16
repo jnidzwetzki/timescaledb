@@ -27,10 +27,15 @@
 #include "import/planner.h"
 #include "compression/create.h"
 #include "nodes/decompress_chunk/decompress_chunk.h"
-#include "nodes/decompress_chunk/planner.h"
 #include "nodes/decompress_chunk/qual_pushdown.h"
 #include "nodes/decompress_chunk_vector/decompress_chunk_vector.h"
+#include "nodes/decompress_chunk_vector/planner.h"
 #include "utils.h"
+
+static CustomPathMethods decompress_chunk_vector_path_methods = {
+	.CustomName = "DecompressChunk (Vector)",
+	.PlanCustomPath = decompress_chunk_vector_plan_create,
+};
 
 /* Check if we can vectorize the given path */
 static bool
@@ -68,25 +73,53 @@ is_vectorizable_agg_path(Path *path)
 
 /* Generate cheaper path with our vector node */
 static void
-add_vector_path_append(AppendPath *append_path, Path *path)
+change_to_vector_path(PlannerInfo *root, RelOptInfo *output_rel, AggPath *aggregation_path,
+					  List *subpaths)
 {
-	Assert(path != NULL);
-	Assert(IsA(path, AggPath));
+	Assert(root != NULL);
+	Assert(subpaths != NULL);
 
-	AggPath *agg_path = castNode(AggPath, path);
+	ListCell *lc;
+
+	/* Check if subpaths can be vectorized */
+	foreach (lc, subpaths)
+	{
+		Path *sub_path = lfirst(lc);
+
+		if (is_vectorizable_agg_path(sub_path))
+		{
+			Assert(IsA(sub_path, AggPath));
+			AggPath *agg_path = castNode(AggPath, sub_path);
+
+			Assert(ts_is_decompress_chunk_path(agg_path->subpath));
+			DecompressChunkPath *decompress_path =
+				(DecompressChunkPath *) castNode(CustomPath, agg_path->subpath);
+
+			Assert(decompress_path != NULL);
+
+			DecompressChunkVectorPath *vector_path =
+				(DecompressChunkVectorPath *) newNode(sizeof(DecompressChunkVectorPath),
+													  T_CustomPath);
+
+			// TODO: Get planner data from subpath
+			vector_path->cpath = decompress_path->cpath;
+			vector_path->info = decompress_path->info;
+
+			/* Set the target to our custom vector node */
+			vector_path->cpath.methods = &decompress_chunk_vector_path_methods;
+
+			/* Our node should emit partials */
+			vector_path->cpath.path.pathtarget = aggregation_path->path.pathtarget;
+
+			Assert(vector_path != NULL);
+			lfirst(lc) = vector_path;
+		}
+	}
 }
 
 static void
-add_vector_path_merge_append(MergeAppendPath *merge_append_path, Path *path)
-{
-	Assert(path != NULL);
-	Assert(IsA(path, AggPath));
-
-	AggPath *agg_path = castNode(AggPath, path);
-}
-
-static void
-handle_agg_sub_path(Path *agg_sub_path)
+handle_agg_sub_path(PlannerInfo *root, RelOptInfo *output_rel, AggPath *aggregation_path,
+					Path *agg_sub_path)
 {
 	Assert(agg_sub_path != NULL);
 
@@ -99,15 +132,7 @@ handle_agg_sub_path(Path *agg_sub_path)
 		if (list_length(subpaths) < 1)
 			return;
 
-		ListCell *lc;
-
-		/* Check if subpath can be vectorized */
-		foreach (lc, subpaths)
-		{
-			Path *sub_path = lfirst(lc);
-			if (is_vectorizable_agg_path(sub_path))
-				add_vector_path_append(append_path, sub_path);
-		}
+		change_to_vector_path(root, output_rel, aggregation_path, subpaths);
 	}
 	else if (IsA(agg_sub_path, MergeAppendPath))
 	{
@@ -118,15 +143,7 @@ handle_agg_sub_path(Path *agg_sub_path)
 		if (list_length(subpaths) < 1)
 			return;
 
-		ListCell *lc;
-
-		/* Check if subpath can be vectorized */
-		foreach (lc, subpaths)
-		{
-			Path *sub_path = lfirst(lc);
-			if (is_vectorizable_agg_path(sub_path))
-				add_vector_path_merge_append(merge_append_path, sub_path);
-		}
+		change_to_vector_path(root, output_rel, aggregation_path, subpaths);
 	}
 	else if (IsA(agg_sub_path, GatherPath))
 	{
@@ -136,7 +153,7 @@ handle_agg_sub_path(Path *agg_sub_path)
 		// TODO: Maybe extract AGGPATH subpath also here
 
 		if (gather_path->subpath != NULL)
-			handle_agg_sub_path(gather_path->subpath);
+			handle_agg_sub_path(root, output_rel, aggregation_path, gather_path->subpath);
 	}
 }
 
@@ -183,7 +200,7 @@ ts_decompress_vector_modify_paths(PlannerInfo *root, RelOptInfo *input_rel, RelO
 
 		/* Handle the subpath of the aggregation */
 		Path *agg_sub_path = aggregation_path->subpath;
-		Assert(agg_sub_path != NULL);
-		handle_agg_sub_path(agg_sub_path);
+
+		handle_agg_sub_path(root, output_rel, aggregation_path, agg_sub_path);
 	}
 }
