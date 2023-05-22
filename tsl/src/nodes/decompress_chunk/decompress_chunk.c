@@ -560,6 +560,30 @@ can_sorted_merge_append(PlannerInfo *root, CompressionInfo *info, Chunk *chunk)
 	return merge_result;
 }
 
+/*
+ * The logic in make_partition_pruneinfo() contains an assert that checks
+ * that relids are unique in a query plan.
+ */
+static void
+adjust_compressed_relid(PlannerInfo *root, CompressionInfo *info, Path *path)
+{
+	Oid compressed_relid = info->compressed_rel->relid;
+	Oid uncompressed_relid = info->chunk_rel->relid;
+
+	Assert(compressed_relid != uncompressed_relid);
+
+	/* Make sure the planner can find the append rel data structures for the compressed relid */
+	root->append_rel_array[compressed_relid] =
+		root->append_rel_array[uncompressed_relid];
+
+	/* Clone the existing chunk_rel and adjust the relid */
+	RelOptInfo *newrel_opt_info = palloc(sizeof(RelOptInfo));
+	memcpy(newrel_opt_info, info->chunk_rel, sizeof(RelOptInfo));
+	newrel_opt_info->relid = compressed_relid;
+
+	path->parent = newrel_opt_info;
+}
+
 void
 ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hypertable *ht,
 								   Chunk *chunk)
@@ -801,14 +825,7 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 					continue;
 			}
 
-			// make make_partition_pruneinfo() happy
-			root->append_rel_array[info->compressed_rel->relid] =
-				root->append_rel_array[info->chunk_rel->relid];
-
-			RelOptInfo *newrel = palloc(sizeof(RelOptInfo));
-			memcpy(newrel, info->chunk_rel, sizeof(RelOptInfo));
-			newrel->relid = info->compressed_rel->relid;
-			path->parent = newrel;
+			adjust_compressed_relid(root, info, path);
 
 			Assert(path->parent->relid != uncompressed_path->parent->relid);
 			path = (Path *) create_append_path_compat(root,
@@ -883,11 +900,7 @@ ts_decompress_chunk_generate_paths(PlannerInfo *root, RelOptInfo *chunk_rel, Hyp
 						continue;
 				}
 
-				// Fix relid
-				RelOptInfo *newrel = palloc(sizeof(RelOptInfo));
-				memcpy(newrel, info->chunk_rel, sizeof(RelOptInfo));
-				newrel->relid = info->compressed_rel->relid;
-				path->parent = newrel;
+				adjust_compressed_relid(root, info, path);
 
 				path = (Path *) create_append_path_compat(root,
 														  chunk_rel,

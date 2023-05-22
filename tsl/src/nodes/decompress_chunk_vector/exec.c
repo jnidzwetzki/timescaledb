@@ -48,11 +48,18 @@ decompress_chunk_vector_exec(CustomScanState *node)
 static void
 decompress_chunk_vector_begin(CustomScanState *node, EState *estate, int eflags)
 {
+	// DecompressChunkVectorState *chunk_state = (DecompressChunkVectorState *) node;
+	CustomScan *vector_scan_plan = castNode(CustomScan, node->ss.ps.plan);
+
+	Plan *compressed_scan = (Plan *) linitial(vector_scan_plan->custom_plans);
+	PlanState *compressed_state = (PlanState *) ExecInitNode(compressed_scan, estate, eflags);
+	node->custom_ps = lappend(node->custom_ps, compressed_state);
 }
 
 static void
 decompress_chunk_vector_end(CustomScanState *node)
 {
+	ExecEndNode(linitial(node->custom_ps));
 }
 
 static void
@@ -68,9 +75,9 @@ decompress_chunk_vector_explain(CustomScanState *node, List *ancestors, ExplainS
 Node *
 decompress_chunk_vector_state_create(CustomScan *cscan)
 {
-	DecompressChunkVectorState *chunk_state;
-	chunk_state = (DecompressChunkVectorState *) newNode(sizeof(DecompressChunkVectorState),
-														 T_CustomScanState);
+	DecompressChunkVectorState *chunk_state =
+		(DecompressChunkVectorState *) newNode(sizeof(DecompressChunkVectorState),
+											   T_CustomScanState);
 	chunk_state->csstate.methods = &decompress_chunk_vector_state_methods;
 	return (Node *) chunk_state;
 }
