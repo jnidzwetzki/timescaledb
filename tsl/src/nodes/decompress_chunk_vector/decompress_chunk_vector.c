@@ -66,7 +66,11 @@ is_vectorizable_agg_path(Path *path)
 
 	Aggref *aggref = castNode(Aggref, expr_node);
 
+#if PG14_LT
+	if (aggref->aggfnoid != F_INT4_SUM)
+#else
 	if (aggref->aggfnoid != F_SUM_INT4)
+#endif
 		return false;
 
 	return true;
