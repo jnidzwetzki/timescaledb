@@ -12,6 +12,7 @@
 #include <optimizer/cost.h>
 #include <optimizer/optimizer.h>
 #include <optimizer/planner.h>
+#include <optimizer/pathnode.h>
 #include <optimizer/tlist.h>
 #include <parser/parse_func.h>
 #include <utils/lsyscache.h>
@@ -19,6 +20,9 @@
 #include "planner.h"
 #include "extension_constants.h"
 #include "utils.h"
+#include "estimate.h"
+#include "import/planner.h"
+
 
 #define TS_PARTIALFN "partialize_agg"
 
@@ -225,7 +229,7 @@ partialize_agg_paths(RelOptInfo *rel)
  * Modifies : output_rel if partials aggs were found.
  */
 bool
-ts_plan_process_partialize_agg(PlannerInfo *root, RelOptInfo *output_rel)
+ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	Query *parse = root->parse;
 	bool found_partialize_agg_func;
@@ -237,6 +241,113 @@ ts_plan_process_partialize_agg(PlannerInfo *root, RelOptInfo *output_rel)
 
 	found_partialize_agg_func =
 		has_partialize_function((Node *) parse->targetList, TS_DO_NOT_FIX_AGGSPLIT);
+
+	/* Based on PostgreSQL's create_partitionwise_grouping_paths() */
+	if(ts_guc_enable_vectorized_aggregation && !found_partialize_agg_func)
+	{
+		if(ht == NULL || hypertable_is_distributed(ht))
+			return false;
+
+		if (parse->groupingSets || !parse->hasAggs)
+			return false;
+		
+		/* Construct aggregation paths with partial aggregate pushdown */
+		if (!input_rel->partial_pathlist)
+			return false;
+		
+		Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
+
+		output_rel->pathlist = NIL;
+		output_rel->partial_pathlist = NIL;		
+
+		AggClauseCosts agg_partial_costs;
+		AggClauseCosts agg_final_costs;
+
+		MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
+		MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
+
+		double d_num_partial_groups = 1;
+		double d_num_groups = 1;
+		PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
+		AggClauseCosts agg_costs;
+
+		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, target);
+
+		add_partial_path(output_rel,
+					 (Path *) create_agg_path(root,
+											  output_rel,
+											  cheapest_partial_path,
+											  partial_grouping_target,
+											  AGG_HASHED,
+											  AGGSPLIT_INITIAL_SERIAL,
+											  parse->groupClause,
+											  NIL,
+											  &agg_partial_costs,
+											  d_num_partial_groups));
+
+		Path *partial_path = (Path *) linitial(output_rel->partial_pathlist);
+
+		double total_groups = partial_path->rows * partial_path->parallel_workers;
+
+		partial_path = (Path *) create_gather_path(root,
+												output_rel,
+												partial_path,
+												partial_grouping_target,
+												NULL,
+												&total_groups);
+
+		add_path(output_rel,
+			 (Path *) create_agg_path(root,
+									  output_rel,
+									  partial_path,
+									  output_rel->reltarget,
+									  AGG_HASHED,
+									  AGGSPLIT_FINAL_DESERIAL,
+									  parse->groupClause,
+									  (List *) parse->havingQual,
+									  &agg_costs,
+									  d_num_groups));
+
+		//ListCell *lc;
+
+		// /* Convert to pathlist to partial aggregate */
+		// foreach (lc, output_rel->pathlist)
+		// {
+		// 	Path *path = lfirst(lc);
+
+		// 	if (IsA(path, AggPath))
+		// 	{
+		// 		AggPath *agg = castNode(AggPath, path);
+
+		// 		if(agg->aggsplit == AGGSPLIT_SIMPLE)
+		// 			agg->aggsplit = AGGSPLIT_FINAL_DESERIAL;
+		// 	}
+		// }
+
+		// foreach(lc, (Node *) parse->targetList)
+		// {
+		// 	Aggref	   *aggref = (Aggref *) lfirst(lc);
+
+		// 	if (IsA(aggref, Aggref))
+		// 	{
+		// 		Aggref	   *newaggref;
+
+		// 		/*
+		// 		* We shouldn't need to copy the substructure of the Aggref node,
+		// 		* but flat-copy the node itself to avoid damaging other trees.
+		// 		*/
+		// 		newaggref = makeNode(Aggref);
+		// 		memcpy(newaggref, aggref, sizeof(Aggref));
+
+		// 		/* For now, assume serialization is required */
+		// 		mark_partial_aggref(newaggref, AGGSPLIT_INITIAL_SERIAL);
+
+		// 		lfirst(lc) = newaggref;
+		// 	}
+		// }
+
+		return true;
+	}
 
 	if (!found_partialize_agg_func)
 		return false;

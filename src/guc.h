@@ -32,7 +32,7 @@ extern TSDLLEXPORT bool ts_guc_enable_decompression_sorted_merge;
 extern TSDLLEXPORT bool ts_guc_enable_per_data_node_queries;
 extern TSDLLEXPORT bool ts_guc_enable_parameterized_data_node_scan;
 extern TSDLLEXPORT bool ts_guc_enable_async_append;
-extern TSDLLEXPORT bool ts_guc_enable_partitionwise_aggregation;
+extern TSDLLEXPORT bool ts_guc_enable_vectorized_aggregation;
 extern TSDLLEXPORT bool ts_guc_enable_skip_scan;
 extern bool ts_guc_restoring;
 extern int ts_guc_max_open_chunks_per_insert;
