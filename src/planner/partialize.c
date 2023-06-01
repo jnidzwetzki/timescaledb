@@ -262,7 +262,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 			return false;
 
 		/* No partial paths are available to construct the input relation, no partial aggregation possible */
-		if (!input_rel->partial_pathlist)
+		if (! input_rel->consider_parallel || !input_rel->partial_pathlist)
 			return false;
 		
 		/* Construct aggregation paths with partial aggregate pushdown */
@@ -279,10 +279,9 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		double d_num_partial_groups = 1;
 		double d_num_groups = 1;
-		PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
+		//PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
 		AggClauseCosts agg_costs;
 
-		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, target);
 
 		/* Get and iterate over sub paths */
 		List *subpaths = NIL;
@@ -306,36 +305,61 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		Assert(subpaths != NIL);
 
-		add_partial_path(output_rel,
-					(Path *) create_agg_path(root,
-											output_rel,
-											cheapest_partial_path,
-											partial_grouping_target,
-											AGG_HASHED,
-											AGGSPLIT_INITIAL_SERIAL,
-											parse->groupClause,
-											NIL,
-											&agg_partial_costs,
-											d_num_partial_groups));
 
-		// ListCell *lc;
-		// foreach (lc, subpaths)
-		// {
-		// 	Path *subpath = lfirst(lc);
+		/* Based on create_partial_grouping_paths */
+		RelOptInfo* partially_grouped_rel = fetch_upper_rel(root,
+											UPPERREL_PARTIAL_GROUP_AGG,
+											input_rel->relids);
+
+		partially_grouped_rel->consider_parallel =
+			input_rel->consider_parallel;
+
+		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, input_rel->reltarget);
+		partially_grouped_rel->reltarget = partial_grouping_target;
+
+		Assert(partially_grouped_rel->consider_parallel);
+
+		ListCell *lc;
+		foreach (lc, subpaths)
+		{
+			Path *subpath = lfirst(lc);
+
+			if(! subpath->parallel_safe)
+				continue;
+
+			if(subpath->parent->partial_pathlist == NIL)
+				continue;
+
+			Path *cheapest_partial_sub_path = linitial(subpath->parent->partial_pathlist);
 
 
-		// }
+			add_partial_path(partially_grouped_rel,
+						(Path *) create_agg_path(root,
+												partially_grouped_rel,
+												cheapest_partial_sub_path,
+												partially_grouped_rel->reltarget,
+												AGG_HASHED,
+												AGGSPLIT_INITIAL_SERIAL,
+												parse->groupClause,
+												NIL,
+												&agg_partial_costs,
+												d_num_partial_groups));
+		}
 
-		Path *partial_path = (Path *) linitial(output_rel->partial_pathlist);
+
+		/* Based on gather_grouping_paths */
+		Path *partial_path = (Path *) linitial(partially_grouped_rel->partial_pathlist);
 
 		double total_groups = partial_path->rows * partial_path->parallel_workers;
 
 		partial_path = (Path *) create_gather_path(root,
-												output_rel,
-												partial_path,
-												partial_grouping_target,
-												NULL,
-												&total_groups);
+		 										output_rel,
+		 										partial_path,
+		 										partial_grouping_target,
+		 										NULL,
+		 										&total_groups);
+
+
 
 		add_path(output_rel,
 			 (Path *) create_agg_path(root,
@@ -349,43 +373,9 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 									  &agg_costs,
 									  d_num_groups));
 
-		//ListCell *lc;
 
-		// /* Convert to pathlist to partial aggregate */
-		// foreach (lc, output_rel->pathlist)
-		// {
-		// 	Path *path = lfirst(lc);
 
-		// 	if (IsA(path, AggPath))
-		// 	{
-		// 		AggPath *agg = castNode(AggPath, path);
 
-		// 		if(agg->aggsplit == AGGSPLIT_SIMPLE)
-		// 			agg->aggsplit = AGGSPLIT_FINAL_DESERIAL;
-		// 	}
-		// }
-
-		// foreach(lc, (Node *) parse->targetList)
-		// {
-		// 	Aggref	   *aggref = (Aggref *) lfirst(lc);
-
-		// 	if (IsA(aggref, Aggref))
-		// 	{
-		// 		Aggref	   *newaggref;
-
-		// 		/*
-		// 		* We shouldn't need to copy the substructure of the Aggref node,
-		// 		* but flat-copy the node itself to avoid damaging other trees.
-		// 		*/
-		// 		newaggref = makeNode(Aggref);
-		// 		memcpy(newaggref, aggref, sizeof(Aggref));
-
-		// 		/* For now, assume serialization is required */
-		// 		mark_partial_aggref(newaggref, AGGSPLIT_INITIAL_SERIAL);
-
-		// 		lfirst(lc) = newaggref;
-		// 	}
-		// }
 
 		return true;
 	}
