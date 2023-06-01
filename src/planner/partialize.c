@@ -245,16 +245,27 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 	/* Based on PostgreSQL's create_partitionwise_grouping_paths() */
 	if(ts_guc_enable_vectorized_aggregation && !found_partialize_agg_func)
 	{
+		/* We are only interersted in hypertables */
 		if(ht == NULL || hypertable_is_distributed(ht))
 			return false;
 
-		if (parse->groupingSets || !parse->hasAggs)
+		/* Perform aggregation re-planning only if there is an aggregation is requestzed */
+		if(!parse->hasAggs)
+			return false;
+
+		/* We can only perform a partial partitionwise aggregation, if no grouping is performed */
+		if (parse->groupingSets)
 			return false;
 		
-		/* Construct aggregation paths with partial aggregate pushdown */
+		/* Insufficient support for partial mode. */
+		if (root->hasNonPartialAggs || root->hasNonSerialAggs)
+			return false;
+
+		/* No partial paths are available to construct the input relation, no partial aggregation possible */
 		if (!input_rel->partial_pathlist)
 			return false;
 		
+		/* Construct aggregation paths with partial aggregate pushdown */
 		Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
 		output_rel->pathlist = NIL;
@@ -273,17 +284,47 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, target);
 
+		/* Get and iterate over sub paths */
+		List *subpaths = NIL;
+		if (IsA(cheapest_partial_path, AppendPath))
+		{
+			AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
+			subpaths = append_path->subpaths;
+		}
+		else if(IsA(cheapest_partial_path, MergeAppendPath))
+		{
+			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
+			subpaths =  merge_append_path->subpaths;
+		}
+		else
+		{
+			ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unknown path type"),
+				 errhint("....")));
+		}
+
+		Assert(subpaths != NIL);
+
 		add_partial_path(output_rel,
-					 (Path *) create_agg_path(root,
-											  output_rel,
-											  cheapest_partial_path,
-											  partial_grouping_target,
-											  AGG_HASHED,
-											  AGGSPLIT_INITIAL_SERIAL,
-											  parse->groupClause,
-											  NIL,
-											  &agg_partial_costs,
-											  d_num_partial_groups));
+					(Path *) create_agg_path(root,
+											output_rel,
+											cheapest_partial_path,
+											partial_grouping_target,
+											AGG_HASHED,
+											AGGSPLIT_INITIAL_SERIAL,
+											parse->groupClause,
+											NIL,
+											&agg_partial_costs,
+											d_num_partial_groups));
+
+		// ListCell *lc;
+		// foreach (lc, subpaths)
+		// {
+		// 	Path *subpath = lfirst(lc);
+
+
+		// }
 
 		Path *partial_path = (Path *) linitial(output_rel->partial_pathlist);
 
