@@ -245,11 +245,11 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 	/* Based on PostgreSQL's create_partitionwise_grouping_paths() */
 	if (ts_guc_enable_vectorized_aggregation && !found_partialize_agg_func)
 	{
-		/* We are only interersted in hypertables */
+		/* We are only interested in hypertables */
 		if (ht == NULL || hypertable_is_distributed(ht))
 			return false;
 
-		/* Perform aggregation re-planning only if there is an aggregation is requestzed */
+		/* Perform aggregation re-planning only if there is an aggregation is requested */
 		if (!parse->hasAggs)
 			return false;
 
