@@ -4,6 +4,29 @@
 `psql` with the `-X` flag to prevent any `.psqlrc` commands from
 accidentally triggering the load of a previous DB version.**
 
+## 2.11.1 (2023-06-29)
+
+This release contains bug fixes since the 2.11.0 release.
+We recommend that you upgrade at the next available opportunity.
+
+**Features**
+* #5679 Update the loader to add support for the OSM extension (used for data tiering on [Timescale](https://www.timescale.com/))
+
+**Bugfixes**
+* #5705 Scheduler accidentally getting killed when calling `delete_job`
+* #5742 Fix Result node handling with ConstraintAwareAppend on compressed chunks
+* #5750 Ensure tlist is present in decompress chunk plan 
+* #5754 Fixed handling of NULL values in bookend_sfunc 
+* #5798 Fixed batch look ahead in compressed sorted merge
+* #5804 Mark cagg_watermark function as PARALLEL RESTRICTED
+* #5807 Copy job config JSONB structure into current MemoryContext
+* #5824 Improve continuous aggregate query chunk exclusion
+
+**Thanks**
+* @JamieD9 for reporting an issue with a wrong result ordering
+* @xvaara for reporting an issue with Result node handling in ConstraintAwareAppend
+
+
 ## 2.11.0 (2023-05-12)
 
 This release contains new features and bug fixes since the 2.10.3 release.
@@ -15,11 +38,12 @@ This release includes these noteworthy features:
   * Support for unique constraints on compressed chunks
   * Support for `ON CONFLICT DO UPDATE`
   * Support for `ON CONFLICT DO NOTHING`
-* Join support for hierarchical Continuous Aggregates
+* Join support for Hierarchical Continuous Aggregates
+* Performance improvements for real-time Hierarchical Continuous Aggregates
 
 **Features**
 * #5212 Allow pushdown of reference table joins
-* #5221 Improve Realtime Continuous Aggregate performance
+* #5261 Improve Realtime Continuous Aggregate performance
 * #5252 Improve unique constraint support on compressed hypertables
 * #5339 Support UPDATE/DELETE on compressed hypertables
 * #5344 Enable JOINS for Hierarchical Continuous Aggregates
@@ -31,6 +55,7 @@ This release includes these noteworthy features:
 * #5584 Reduce decompression during constraint checking
 * #5530 Optimize compressed chunk resorting
 * #5639 Support sending telemetry event reports
+* #5150 MERGE support on hypertables
 
 **Bugfixes**
 * #5396 Fix SEGMENTBY columns predicates to be pushed down

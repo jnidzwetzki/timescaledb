@@ -18,11 +18,11 @@ $$;
 CREATE OR REPLACE PROCEDURE custom_proc2(job_id int, args jsonb) LANGUAGE PLPGSQL AS
 $$
 BEGIN
-  INSERT INTO custom_log VALUES($1, $2, 'custom_proc 1 COMMIT');
+  INSERT INTO custom_log VALUES($1, $2, 'custom_proc2 1 COMMIT ' || (args->>'type'));
   COMMIT;
-  INSERT INTO custom_log VALUES($1, $2, 'custom_proc 2 ROLLBACK');
+  INSERT INTO custom_log VALUES($1, $2, 'custom_proc2 2 ROLLBACK ' || (args->>'type'));
   ROLLBACK;
-  INSERT INTO custom_log VALUES($1, $2, 'custom_proc 3 COMMIT');
+  INSERT INTO custom_log VALUES($1, $2, 'custom_proc2 3 COMMIT ' || (args->>'type'));
   COMMIT;
 END
 $$;
@@ -105,14 +105,14 @@ CALL run_job(1002);
 CALL run_job(1003);
 CALL run_job(1004);
 SELECT * FROM custom_log ORDER BY job_id, extra;
- job_id |         args          |        extra         |      runner       
---------+-----------------------+----------------------+-------------------
-   1000 | {"type": "function"}  | custom_func          | default_perm_user
-   1001 | {"type": "procedure"} | custom_proc          | default_perm_user
-   1002 | {"type": "procedure"} | custom_proc 1 COMMIT | default_perm_user
-   1002 | {"type": "procedure"} | custom_proc 3 COMMIT | default_perm_user
-   1003 | {"type": "function"}  | custom_func          | default_perm_user
-   1004 | {"type": "function"}  | security definer     | default_perm_user
+ job_id |         args          |              extra              |      runner       
+--------+-----------------------+---------------------------------+-------------------
+   1000 | {"type": "function"}  | custom_func                     | default_perm_user
+   1001 | {"type": "procedure"} | custom_proc                     | default_perm_user
+   1002 | {"type": "procedure"} | custom_proc2 1 COMMIT procedure | default_perm_user
+   1002 | {"type": "procedure"} | custom_proc2 3 COMMIT procedure | default_perm_user
+   1003 | {"type": "function"}  | custom_func                     | default_perm_user
+   1004 | {"type": "function"}  | security definer                | default_perm_user
 (6 rows)
 
 \set ON_ERROR_STOP 0
@@ -365,12 +365,12 @@ SELECT wait_for_job_to_run(:job_id_2, 1);
 
 -- Check results
 SELECT * FROM custom_log ORDER BY job_id, extra;
- job_id |         args          |            extra            |      runner       
---------+-----------------------+-----------------------------+-------------------
-   1000 | {"type": "procedure"} | custom_proc 1 COMMIT        | default_perm_user
-   1000 | {"type": "procedure"} | custom_proc 3 COMMIT        | default_perm_user
-   1001 | {"type": "procedure"} | custom_proc_nested 1 COMMIT | default_perm_user
-   1001 | {"type": "procedure"} | custom_proc_nested 3 COMMIT | default_perm_user
+ job_id |         args          |              extra              |      runner       
+--------+-----------------------+---------------------------------+-------------------
+   1000 | {"type": "procedure"} | custom_proc2 1 COMMIT procedure | default_perm_user
+   1000 | {"type": "procedure"} | custom_proc2 3 COMMIT procedure | default_perm_user
+   1001 | {"type": "procedure"} | custom_proc_nested 1 COMMIT     | default_perm_user
+   1001 | {"type": "procedure"} | custom_proc_nested 3 COMMIT     | default_perm_user
 (4 rows)
 
 -- Delete previous jobs
@@ -917,9 +917,9 @@ ALTER TABLE sensor_data SET (timescaledb.compress, timescaledb.compress_orderby 
 SELECT add_compression_policy('sensor_data', INTERVAL '1' minute) AS compressjob_id \gset
 -- set recompress to true
 SELECT alter_job(id,config:=jsonb_set(config,'{recompress}', 'true')) FROM _timescaledb_config.bgw_job WHERE id = :compressjob_id;
-                                                                                         alter_job                                                                                         
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- (1014,"@ 3 days 12 hours","@ 0",-1,"@ 1 hour",t,"{""recompress"": true, ""hypertable_id"": 4, ""compress_after"": ""@ 1 min""}",-infinity,_timescaledb_internal.policy_compression_check)
+                                                                                           alter_job                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (1014,"@ 3 days 12 hours","@ 0",-1,"@ 1 hour",t,"{""recompress"": true, ""hypertable_id"": 4, ""compress_after"": ""@ 1 min""}",-infinity,_timescaledb_internal.policy_compression_check,f,,)
 (1 row)
 
 -- create new chunks

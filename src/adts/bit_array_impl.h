@@ -240,15 +240,11 @@ bit_array_iter_next(BitArrayIterator *iter, uint8 num_bits)
 	uint8 num_bits_from_next_bucket;
 	uint64 value = 0;
 	uint64 value_from_next_bucket;
-	Assert(num_bits <= 64);
+	CheckCompressedData(num_bits <= 64);
 	if (num_bits == 0)
 		return 0;
 
 	CheckCompressedData(iter->current_bucket < iter->array->buckets.num_elements);
-	if (iter->current_bucket == iter->array->buckets.num_elements - 1)
-	{
-		Assert(iter->bits_used_in_current_bucket <= iter->array->bits_used_in_last_bucket);
-	}
 
 	bits_remaining_in_current_bucket = 64 - iter->bits_used_in_current_bucket;
 	if (bits_remaining_in_current_bucket >= num_bits)
@@ -258,11 +254,6 @@ bit_array_iter_next(BitArrayIterator *iter, uint8 num_bits)
 		value &= bit_array_low_bits_mask(num_bits);
 		iter->bits_used_in_current_bucket += num_bits;
 
-		if (iter->current_bucket == iter->array->buckets.num_elements - 1)
-		{
-			CheckCompressedData(iter->bits_used_in_current_bucket <=
-								iter->array->bits_used_in_last_bucket);
-		}
 		return value;
 	}
 
@@ -284,11 +275,6 @@ bit_array_iter_next(BitArrayIterator *iter, uint8 num_bits)
 	iter->current_bucket += 1;
 	iter->bits_used_in_current_bucket = num_bits_from_next_bucket;
 
-	if (iter->current_bucket == iter->array->buckets.num_elements - 1)
-	{
-		CheckCompressedData(iter->bits_used_in_current_bucket <=
-							iter->array->bits_used_in_last_bucket);
-	}
 	return value;
 }
 

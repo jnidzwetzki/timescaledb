@@ -73,6 +73,8 @@ struct Compressor
 	void *(*finish)(Compressor *data);
 };
 
+typedef struct ArrowArray ArrowArray;
+
 typedef struct DecompressionIterator
 {
 	uint8 compression_algorithm;
@@ -162,10 +164,14 @@ typedef enum
 	TOAST_STORAGE_EXTENDED
 } CompressionStorage;
 
+typedef ArrowArray *(*DecompressAllFunction)(Datum compressed, Oid element_type,
+											 MemoryContext dest_mctx);
+
 typedef struct CompressionAlgorithmDefinition
 {
 	DecompressionIterator *(*iterator_init_forward)(Datum, Oid element_type);
 	DecompressionIterator *(*iterator_init_reverse)(Datum, Oid element_type);
+	DecompressAllFunction decompress_all;
 	void (*compressed_data_send)(CompressedDataHeader *, StringInfo);
 	Datum (*compressed_data_recv)(StringInfo);
 
@@ -222,6 +228,10 @@ typedef struct RowCompressor
 	BulkInsertState bistate;
 	/* segment by index Oid if any */
 	Oid index_oid;
+	/* relation info necessary to update indexes on compressed table */
+	ResultRelInfo *resultRelInfo;
+	/* segment by index index in the RelInfo if any */
+	int8 segmentby_index_index;
 
 	/* in theory we could have more input columns than outputted ones, so we
 	   store the number of inputs/compressors separately */
@@ -248,8 +258,8 @@ typedef struct RowCompressor
 	bool *compressed_is_null;
 	int64 rowcnt_pre_compression;
 	int64 num_compressed_rows;
-	/* if recompressing segmentwise, we must know this so we can reset the sequence number */
-	bool segmentwise_recompress;
+	/* if recompressing segmentwise, we use this info to reset the sequence number */
+	bool reset_sequence;
 	/* flag for checking if we are working on the first tuple */
 	bool first_iteration;
 } RowCompressor;
@@ -288,8 +298,10 @@ pg_attribute_unused() assert_num_compression_algorithms_sane(void)
 	StaticAssertStmt(COMPRESSION_ALGORITHM_GORILLA == 3, "algorithm index has changed");
 	StaticAssertStmt(COMPRESSION_ALGORITHM_DELTADELTA == 4, "algorithm index has changed");
 
-	/* This should change when adding a new algorithm after adding the new algorithm to the assert
-	 * list above. This statement prevents adding a new algorithm without updating the asserts above
+	/*
+	 * This should change when adding a new algorithm after adding the new
+	 * algorithm to the assert list above. This statement prevents adding a
+	 * new algorithm without updating the asserts above
 	 */
 	StaticAssertStmt(_END_COMPRESSION_ALGORITHMS == 5,
 					 "number of algorithms have changed, the asserts should be updated");
@@ -303,6 +315,8 @@ extern void decompress_chunk(Oid in_table, Oid out_table);
 
 extern DecompressionIterator *(*tsl_get_decompression_iterator_init(
 	CompressionAlgorithms algorithm, bool reverse))(Datum, Oid element_type);
+
+extern DecompressAllFunction tsl_get_decompress_all_function(CompressionAlgorithms algorithm);
 
 typedef struct Chunk Chunk;
 typedef struct ChunkInsertState ChunkInsertState;
@@ -337,7 +351,7 @@ extern void row_compressor_init(RowCompressor *row_compressor, TupleDesc uncompr
 								Relation compressed_table, int num_compression_infos,
 								const ColumnCompressionInfo **column_compression_info,
 								int16 *column_offsets, int16 num_columns_in_compressed_table,
-								bool need_bistate, bool segmentwise_recompress);
+								bool need_bistate, bool reset_sequence);
 extern void row_compressor_finish(RowCompressor *row_compressor);
 extern void populate_per_compressed_columns_from_data(PerCompressedColumn *per_compressed_cols,
 													  int16 num_cols, Datum *compressed_datums,
@@ -361,7 +375,7 @@ extern RowDecompressor build_decompressor(Relation in_rel, Relation out_rel);
 #endif
 
 #define CheckCompressedData(X)                                                                     \
-	if (!(X))                                                                                      \
+	if (unlikely(!(X)))                                                                            \
 	ereport(ERROR, CORRUPT_DATA_MESSAGE)
 
 inline static void *
