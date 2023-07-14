@@ -269,7 +269,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		/* Construct aggregation paths with partial aggregate pushdown */
 		Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
-		//output_rel->pathlist = NIL;
+		output_rel->pathlist = NIL;
 		output_rel->partial_pathlist = NIL;
 
 		AggClauseCosts agg_partial_costs;
@@ -316,9 +316,10 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		//Assert(partially_grouped_rel->consider_parallel);
 
-		add_partial_path(output_rel,
+
+		Path *partial_path = 
 					(Path *) create_agg_path(root,
-											output_rel,
+					  						output_rel,
 											cheapest_partial_path,
 											partial_grouping_target,
 											AGG_HASHED,
@@ -326,9 +327,38 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 											parse->groupClause,
 											NIL,
 											&agg_partial_costs,
-											d_num_partial_groups));
+											d_num_partial_groups);
 
-		Path *partial_path = (Path *) linitial(output_rel->partial_pathlist);
+
+		ListCell *lc;
+		List *new_subpaths = NIL;
+		foreach (lc, subpaths)
+		{
+			Path *subpath = lfirst(lc);
+
+			if (!subpath->parallel_safe)
+				continue;
+
+			if (subpath->parent->partial_pathlist == NIL)
+				continue;
+
+			Path *cheapest_partial_sub_path = linitial(subpath->parent->partial_pathlist);
+
+			Path *partial_path = 
+							(Path *) create_agg_path(root,
+													output_rel,
+													cheapest_partial_sub_path,
+													partial_grouping_target,
+													AGG_HASHED,
+													AGGSPLIT_INITIAL_SERIAL,
+													parse->groupClause,
+													NIL,
+													&agg_partial_costs,
+													d_num_partial_groups);
+
+			new_subpaths = lappend(new_subpaths, partial_path);
+		}
+
 
 		double total_groups = partial_path->rows * partial_path->parallel_workers;
 
