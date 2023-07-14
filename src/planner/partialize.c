@@ -269,8 +269,8 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		/* Construct aggregation paths with partial aggregate pushdown */
 		Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
-		output_rel->pathlist = NIL;
-		output_rel->partial_pathlist = NIL;
+		//output_rel->pathlist = NIL;
+		//output_rel->partial_pathlist = NIL;
 
 		AggClauseCosts agg_partial_costs;
 		AggClauseCosts agg_final_costs;
@@ -278,10 +278,14 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
 		MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
 
+		Assert(&agg_partial_costs);
+		Assert(&agg_final_costs);
+
 		double d_num_partial_groups = 1;
 		double d_num_groups = 1;
 		// PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
 		AggClauseCosts agg_costs;
+		Assert(&agg_costs);
 
 		/* Get and iterate over sub paths */
 		List *subpaths = NIL;
@@ -343,22 +347,25 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 													  d_num_partial_groups));
 		}
 
+		set_cheapest(partially_grouped_rel);
+
 		/* Based on gather_grouping_paths */
-		Path *partial_path = (Path *) linitial(partially_grouped_rel->partial_pathlist);
+//		Path *partial_path = (Path *) linitial(partially_grouped_rel->partial_pathlist);
+		Path	   *path = partially_grouped_rel->cheapest_total_path;
 
-		double total_groups = partial_path->rows * partial_path->parallel_workers;
+		//double total_groups = partial_path->rows * partial_path->parallel_workers;
 
-		partial_path = (Path *) create_gather_path(root,
-												   output_rel,
-												   partial_path,
-												   partial_grouping_target,
-												   NULL,
-												   &total_groups);
+		// partial_path = (Path *) create_gather_path(root,
+		// 										   output_rel,
+		// 										   partial_path,
+		// 										   partial_grouping_target,
+		// 										   NULL,
+		// 										   &total_groups);
 
 		add_path(output_rel,
 				 (Path *) create_agg_path(root,
 										  output_rel,
-										  partial_path,
+										  path,
 										  output_rel->reltarget,
 										  AGG_HASHED,
 										  AGGSPLIT_FINAL_DESERIAL,
