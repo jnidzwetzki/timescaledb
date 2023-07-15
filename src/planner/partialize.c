@@ -360,7 +360,19 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		}
 
 
+		if (IsA(cheapest_partial_path, AppendPath))
+		{
+			AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
+			append_path->subpaths = NIL;
+		}
+		else if (IsA(cheapest_partial_path, MergeAppendPath))
+		{
+			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
+			merge_append_path->subpaths = NIL;
+		}
+
 		double total_groups = partial_path->rows * partial_path->parallel_workers;
+		//cheapest_partial_path -> pathtarget = output_rel->reltarget;
 
 		partial_path = (Path *) create_gather_path(root,
 												output_rel,
