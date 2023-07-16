@@ -23,6 +23,7 @@
 #include "extension_constants.h"
 #include "utils.h"
 #include "estimate.h"
+#include "nodes/chunk_append/chunk_append.h"
 #include "import/planner.h"
 
 #define TS_PARTIALFN "partialize_agg"
@@ -313,6 +314,11 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
 			subpaths = merge_append_path->subpaths;
 		}
+		else if(ts_is_chunk_append_path(cheapest_partial_path))
+		{
+			CustomPath *custom_path = castNode(CustomPath, cheapest_partial_path);
+			subpaths = custom_path->custom_paths;
+		}
 		else
 		{
 			ereport(ERROR,
@@ -365,6 +371,15 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		{
 			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
 			merge_append_path->subpaths = new_subpaths;
+		}
+		else if(ts_is_chunk_append_path(cheapest_partial_path))
+		{
+			CustomPath *custom_path = castNode(CustomPath, cheapest_partial_path);
+			custom_path->custom_paths = new_subpaths;
+		}
+		else
+		{
+			Assert(false);
 		}
 
 		double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
