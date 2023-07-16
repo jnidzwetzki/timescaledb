@@ -9,6 +9,7 @@
 #include <nodes/nodes.h>
 #include <nodes/pathnodes.h>
 #include <nodes/pg_list.h>
+#include <optimizer/appendinfo.h>
 #include <optimizer/cost.h>
 #include <optimizer/optimizer.h>
 #include <optimizer/planner.h>
@@ -18,6 +19,7 @@
 #include <utils/lsyscache.h>
 
 #include "planner.h"
+#include "nodes/print.h"
 #include "extension_constants.h"
 #include "utils.h"
 #include "estimate.h"
@@ -342,13 +344,16 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 			if (subpath->parent->partial_pathlist == NIL)
 				continue;
 
-			//Path *cheapest_partial_sub_path = linitial(subpath->parent->partial_pathlist);
-
+			/* Translate targetlist for partition */
+			AppendRelInfo *appinfo = ts_get_appendrelinfo(root, subpath->parent->relid, false);
+			PathTarget *mypartialtarget = ts_make_partial_grouping_target(root, target);
+			mypartialtarget->exprs = castNode(List, adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
+	
 			Path *partial_path = 
 							(Path *) create_agg_path(root,
 													subpath->parent,
 													subpath,
-													partial_grouping_target,
+													mypartialtarget,
 													AGG_PLAIN,
 													AGGSPLIT_INITIAL_SERIAL,
 													parse->groupClause,
