@@ -285,8 +285,21 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		double d_num_partial_groups = 1;
 		double d_num_groups = 1;
-		//PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
 		AggClauseCosts agg_costs;
+
+		/* Construct partial group agg upper rel */
+		PathTarget *grouping_target = root->upper_targets[UPPERREL_GROUP_AGG];
+		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
+
+		RelOptInfo *partially_grouped_rel =
+			fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, input_rel->relids);
+		partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
+		partially_grouped_rel->reloptkind = input_rel->reloptkind;
+		partially_grouped_rel->serverid = input_rel->serverid;
+		partially_grouped_rel->userid = input_rel->userid;
+		partially_grouped_rel->useridiscurrent = input_rel->useridiscurrent;
+		partially_grouped_rel->fdwroutine = input_rel->fdwroutine;
+		partially_grouped_rel->reltarget = partial_grouping_target;
 
 		/* Get and iterate over sub paths */
 		List *subpaths = NIL;
@@ -310,60 +323,38 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		Assert(subpaths != NIL);
 
-		PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
-		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, target);
-
-		//partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
-
-		//partially_grouped_rel->reltarget = partial_grouping_target;
-
-		//Assert(partially_grouped_rel->consider_parallel);
-
-
-		// Path *partial_path = 
-		// 			(Path *) create_agg_path(root,
-		// 			  						output_rel,
-		// 									cheapest_partial_path,
-		// 									partial_grouping_target,
-		// 									AGG_PLAIN,
-		// 									AGGSPLIT_INITIAL_SERIAL,
-		// 									parse->groupClause,
-		// 									NIL,
-		// 									&agg_partial_costs,
-		// 									d_num_partial_groups);
-
 		ListCell *lc;
 		List *new_subpaths = NIL;
 		foreach (lc, subpaths)
 		{
 			Path *subpath = lfirst(lc);
 
-			if (!subpath->parallel_safe)
-				continue;
-
-			if (subpath->parent->partial_pathlist == NIL)
-				continue;
+			Assert(subpath->parallel_safe);
+			Assert(subpath->parent->partial_pathlist != NIL);
 
 			/* Translate targetlist for partition */
 			AppendRelInfo *appinfo = ts_get_appendrelinfo(root, subpath->parent->relid, false);
-			PathTarget *mypartialtarget = ts_make_partial_grouping_target(root, target);
-			mypartialtarget->exprs = castNode(List, adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
-	
-			Path *partial_path = 
-							(Path *) create_agg_path(root,
-													subpath->parent,
-													subpath,
-													mypartialtarget,
-													AGG_PLAIN,
-													AGGSPLIT_INITIAL_SERIAL,
-													parse->groupClause,
-													NIL,
-													&agg_partial_costs,
-													d_num_partial_groups);
+			PathTarget *mypartialtarget = copy_pathtarget(partial_grouping_target);
+			mypartialtarget->exprs =
+				castNode(List,
+						 adjust_appendrel_attrs(root,
+												(Node *) mypartialtarget->exprs,
+												1,
+												&appinfo));
+
+			Path *partial_path = (Path *) create_agg_path(root,
+														  subpath->parent,
+														  subpath,
+														  mypartialtarget,
+														  AGG_PLAIN,
+														  AGGSPLIT_INITIAL_SERIAL,
+														  parse->groupClause,
+														  NIL,
+														  &agg_partial_costs,
+														  d_num_partial_groups);
 
 			new_subpaths = lappend(new_subpaths, partial_path);
 		}
-
 
 		if (IsA(cheapest_partial_path, AppendPath))
 		{
@@ -376,86 +367,27 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 			merge_append_path->subpaths = new_subpaths;
 		}
 
-
 		double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
 		cheapest_partial_path->pathtarget = partial_grouping_target;
-		// cheapest_partial_path->parent->reltarget = partial_grouping_target;
-		//output_rel -> reltarget = partial_grouping_target;
 
-		Path* partial_path = (Path *) create_gather_path(root,
-												output_rel,
-												cheapest_partial_path,
-												partial_grouping_target,
-												NULL,
-												&total_groups);
-
-	//if (node->pathtarget != node->parent->reltarget)
-
+		Path *partial_path = (Path *) create_gather_path(root,
+														 partially_grouped_rel,
+														 cheapest_partial_path,
+														 partially_grouped_rel->reltarget,
+														 NULL,
+														 &total_groups);
 
 		add_path(output_rel,
-			 (Path *) create_agg_path(root,
-									  output_rel,
-									  partial_path,
-									  target,
-									  AGG_PLAIN,
-									  AGGSPLIT_FINAL_DESERIAL,
-									  parse->groupClause,
-									  (List *) parse->havingQual,
-									  &agg_costs,
-									  d_num_groups));
-
-		// ListCell *lc;
-		// foreach (lc, subpaths)
-		// {
-		// 	Path *subpath = lfirst(lc);
-
-		// 	if (!subpath->parallel_safe)
-		// 		continue;
-
-		// 	if (subpath->parent->partial_pathlist == NIL)
-		// 		continue;
-
-		// 	Path *cheapest_partial_sub_path = linitial(subpath->parent->partial_pathlist);
-
-		// 	add_partial_path(partially_grouped_rel,
-		// 					 (Path *) create_agg_path(root,
-		// 											  partially_grouped_rel,
-		// 											  cheapest_partial_sub_path,
-		// 											  partially_grouped_rel->reltarget,
-		// 											  AGG_HASHED,
-		// 											  AGGSPLIT_INITIAL_SERIAL,
-		// 											  parse->groupClause,
-		// 											  NIL,
-		// 											  &agg_partial_costs,
-		// 											  d_num_partial_groups));
-		// }
-
-		// set_cheapest(partially_grouped_rel);
-
-// 		/* Based on gather_grouping_paths */
-// //		Path *partial_path = (Path *) linitial(partially_grouped_rel->partial_pathlist);
-// 		Path	   *path = partially_grouped_rel->cheapest_total_path;
-
-// 		//double total_groups = partial_path->rows * partial_path->parallel_workers;
-
-// 		// partial_path = (Path *) create_gather_path(root,
-// 		// 										   output_rel,
-// 		// 										   partial_path,
-// 		// 										   partial_grouping_target,
-// 		// 										   NULL,
-// 		// 										   &total_groups);
-
-// 		add_path(output_rel,
-// 				 (Path *) create_agg_path(root,
-// 										  output_rel,
-// 										  path,
-// 										  output_rel->reltarget,
-// 										  AGG_HASHED,
-// 										  AGGSPLIT_FINAL_DESERIAL,
-// 										  parse->groupClause,
-// 										  (List *) parse->havingQual,
-// 										  &agg_costs,
-// 										  d_num_groups));
+				 (Path *) create_agg_path(root,
+										  output_rel,
+										  partial_path,
+										  grouping_target,
+										  AGG_PLAIN,
+										  AGGSPLIT_FINAL_DESERIAL,
+										  parse->groupClause,
+										  (List *) parse->havingQual,
+										  &agg_costs,
+										  d_num_groups));
 
 		return true;
 	}
