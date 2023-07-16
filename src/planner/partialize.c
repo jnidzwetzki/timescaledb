@@ -283,7 +283,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		double d_num_partial_groups = 1;
 		double d_num_groups = 1;
-		PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
+		//PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
 		AggClauseCosts agg_costs;
 
 		/* Get and iterate over sub paths */
@@ -308,7 +308,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		Assert(subpaths != NIL);
 
-		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, target);
+		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, root->upper_targets[UPPERREL_GROUP_AGG]);
 
 		//partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
 
@@ -317,17 +317,17 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		//Assert(partially_grouped_rel->consider_parallel);
 
 
-		Path *partial_path = 
-					(Path *) create_agg_path(root,
-					  						output_rel,
-											cheapest_partial_path,
-											partial_grouping_target,
-											AGG_HASHED,
-											AGGSPLIT_INITIAL_SERIAL,
-											parse->groupClause,
-											NIL,
-											&agg_partial_costs,
-											d_num_partial_groups);
+		// Path *partial_path = 
+		// 			(Path *) create_agg_path(root,
+		// 			  						output_rel,
+		// 									cheapest_partial_path,
+		// 									partial_grouping_target,
+		// 									AGG_PLAIN,
+		// 									AGGSPLIT_INITIAL_SERIAL,
+		// 									parse->groupClause,
+		// 									NIL,
+		// 									&agg_partial_costs,
+		// 									d_num_partial_groups);
 
 
 		ListCell *lc;
@@ -342,14 +342,14 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 			if (subpath->parent->partial_pathlist == NIL)
 				continue;
 
-			Path *cheapest_partial_sub_path = linitial(subpath->parent->partial_pathlist);
+			//Path *cheapest_partial_sub_path = linitial(subpath->parent->partial_pathlist);
 
 			Path *partial_path = 
 							(Path *) create_agg_path(root,
 													output_rel,
-													cheapest_partial_sub_path,
+													subpath,
 													partial_grouping_target,
-													AGG_HASHED,
+													AGG_PLAIN,
 													AGGSPLIT_INITIAL_SERIAL,
 													parse->groupClause,
 													NIL,
@@ -363,20 +363,20 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		if (IsA(cheapest_partial_path, AppendPath))
 		{
 			AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
-			append_path->subpaths = NIL;
+			append_path->subpaths = new_subpaths;
 		}
 		else if (IsA(cheapest_partial_path, MergeAppendPath))
 		{
 			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
-			merge_append_path->subpaths = NIL;
+			merge_append_path->subpaths = new_subpaths;
 		}
 
-		double total_groups = partial_path->rows * partial_path->parallel_workers;
-		//cheapest_partial_path -> pathtarget = output_rel->reltarget;
+		double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
+		cheapest_partial_path -> pathtarget = partial_grouping_target;
 
-		partial_path = (Path *) create_gather_path(root,
+		Path* partial_path = (Path *) create_gather_path(root,
 												output_rel,
-												partial_path,
+												cheapest_partial_path,
 												partial_grouping_target,
 												NULL,
 												&total_groups);
@@ -386,7 +386,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 									  output_rel,
 									  partial_path,
 									  output_rel->reltarget,
-									  AGG_HASHED,
+									  AGG_PLAIN,
 									  AGGSPLIT_FINAL_DESERIAL,
 									  parse->groupClause,
 									  (List *) parse->havingQual,
