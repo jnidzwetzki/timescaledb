@@ -308,7 +308,8 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 		Assert(subpaths != NIL);
 
-		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, root->upper_targets[UPPERREL_GROUP_AGG]);
+		PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
+		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, target);
 
 		//partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
 
@@ -329,7 +330,6 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		// 									&agg_partial_costs,
 		// 									d_num_partial_groups);
 
-
 		ListCell *lc;
 		List *new_subpaths = NIL;
 		foreach (lc, subpaths)
@@ -346,7 +346,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 			Path *partial_path = 
 							(Path *) create_agg_path(root,
-													output_rel,
+													subpath->parent,
 													subpath,
 													partial_grouping_target,
 													AGG_PLAIN,
@@ -371,8 +371,11 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 			merge_append_path->subpaths = new_subpaths;
 		}
 
+
 		double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
-		//cheapest_partial_path -> pathtarget = partial_grouping_target;
+		cheapest_partial_path->pathtarget = partial_grouping_target;
+		// cheapest_partial_path->parent->reltarget = partial_grouping_target;
+		//output_rel -> reltarget = partial_grouping_target;
 
 		Path* partial_path = (Path *) create_gather_path(root,
 												output_rel,
@@ -381,11 +384,14 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 												NULL,
 												&total_groups);
 
+	//if (node->pathtarget != node->parent->reltarget)
+
+
 		add_path(output_rel,
 			 (Path *) create_agg_path(root,
 									  output_rel,
 									  partial_path,
-									  output_rel->reltarget,
+									  target,
 									  AGG_PLAIN,
 									  AGGSPLIT_FINAL_DESERIAL,
 									  parse->groupClause,
