@@ -372,7 +372,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 		}
 
 		double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
-		cheapest_partial_path -> pathtarget = partial_grouping_target;
+		//cheapest_partial_path -> pathtarget = partial_grouping_target;
 
 		Path* partial_path = (Path *) create_gather_path(root,
 												output_rel,
