@@ -15,6 +15,7 @@ set(TEST_FILES
     compressed_collation.sql
     compression_bgw.sql
     compression_conflicts.sql
+    compression_insert.sql
     compression_qualpushdown.sql
     dist_param.sql
     dist_views.sql
@@ -53,6 +54,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     compression_merge.sql
     compression_indexscan.sql
     compression_segment_meta.sql
+    compress_sorted_merge_filter.sql
     compress_table.sql
     cagg_bgw_drop_chunks.sql
     cagg_bgw.sql
@@ -62,6 +64,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     cagg_drop_chunks.sql
     cagg_dump.sql
     cagg_errors_deprecated.sql
+    cagg_joins.sql
     cagg_migrate.sql
     cagg_migrate_dist_ht.sql
     cagg_multi.sql
@@ -97,6 +100,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     read_only.sql
     remote_connection_cache.sql
     remote_connection.sql
+    remote_copy.sql
     remote_stmt_params.sql
     remote_txn_id.sql
     remote_txn_resolve.sql
@@ -106,7 +110,8 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     license_tsl.sql
     fixed_schedules.sql
     recompress_chunk_segmentwise.sql
-    transparent_decompression_join_index.sql)
+    transparent_decompression_join_index.sql
+    feature_flags.sql)
 endif(CMAKE_BUILD_TYPE MATCHES Debug)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
@@ -153,11 +158,8 @@ if(${PG_VERSION_MAJOR} EQUAL "15" AND ${PG_VERSION_MINOR} LESS "3")
 endif()
 
 set(TEST_TEMPLATES
-    compression_insert.sql.in
-    compression_sorted_merge.sql.in
-    cagg_union_view.sql.in
-    plan_skip_scan.sql.in
-    transparent_decompression.sql.in
+    compression_sorted_merge.sql.in cagg_union_view.sql.in
+    plan_skip_scan.sql.in transparent_decompression.sql.in
     transparent_decompression_ordered_index.sql.in)
 
 # This test runs only with PG version >= 14
@@ -171,7 +173,6 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     TEST_TEMPLATES
     cagg_query.sql.in
     dist_hypertable.sql.in
-    remote_copy.sql.in
     dist_grant.sql.in
     dist_ref_table_join.sql.in
     dist_remote_error.sql.in
@@ -179,8 +180,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     dist_query.sql.in
     cagg_invalidation_dist_ht.sql.in
     continuous_aggs.sql.in
-    continuous_aggs_deprecated.sql.in
-    cagg_joins.sql.in)
+    continuous_aggs_deprecated.sql.in)
   if(USE_TELEMETRY)
     list(APPEND TEST_TEMPLATES telemetry_stats.sql.in)
   endif()
