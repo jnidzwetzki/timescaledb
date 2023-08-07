@@ -107,14 +107,14 @@ change_to_vector_path(PlannerInfo *root, RelOptInfo *output_rel, AggPath *aggreg
 													  T_CustomPath);
 
 			// TODO: Get planner data from subpath
-			vector_path->cpath = decompress_path->cpath;
+			vector_path->custom_path = decompress_path->custom_path;
 			vector_path->info = decompress_path->info;
 
 			/* Set the target to our custom vector node */
-			vector_path->cpath.methods = &decompress_chunk_vector_path_methods;
+			vector_path->custom_path.methods = &decompress_chunk_vector_path_methods;
 
 			/* Our node should emit partials */
-			vector_path->cpath.path.pathtarget = aggregation_path->path.pathtarget;
+			vector_path->custom_path.path.pathtarget = aggregation_path->path.pathtarget;
 
 			Assert(vector_path != NULL);
 			lfirst(lc) = vector_path;

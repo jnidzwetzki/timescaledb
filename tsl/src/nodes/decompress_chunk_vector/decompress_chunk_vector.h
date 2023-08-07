@@ -16,7 +16,7 @@
 
 typedef struct DecompressChunkVectorPath
 {
-	CustomPath cpath;
+	CustomPath custom_path;
 	CompressionInfo *info;
 } DecompressChunkVectorPath;
 

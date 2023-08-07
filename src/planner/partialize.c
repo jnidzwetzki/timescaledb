@@ -191,6 +191,163 @@ partialize_agg_paths(RelOptInfo *rel)
 	return has_combine;
 }
 
+static void
+pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, RelOptInfo *output_rel)
+{
+	Query *parse = root->parse;
+
+	/* We are only interested in hypertables */
+	if (ht == NULL || hypertable_is_distributed(ht))
+		return;
+
+	/* Perform aggregation re-planning only if there is an aggregation is requested */
+	if (!parse->hasAggs)
+		return;
+
+	/* We can only perform a partial partitionwise aggregation, if no grouping is performed */
+	if (parse->groupingSets)
+		return;
+
+	/* Insufficient support for partial mode. */
+	if (root->hasNonPartialAggs || root->hasNonSerialAggs)
+		return;
+
+	/* No partial paths are available to construct the input relation, no partial aggregation
+	 * possible */
+	if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
+		return;
+
+	/* Construct aggregation paths with partial aggregate pushdown */
+	Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
+
+	output_rel->pathlist = NIL;
+	output_rel->partial_pathlist = NIL;
+
+	AggClauseCosts agg_partial_costs;
+	AggClauseCosts agg_final_costs;
+
+	MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
+	MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
+
+	Assert(&agg_partial_costs);
+	Assert(&agg_final_costs);
+
+	double d_num_partial_groups = 1;
+	double d_num_groups = 1;
+	AggClauseCosts agg_costs;
+
+	/* Construct partial group agg upper rel */
+	PathTarget *grouping_target = root->upper_targets[UPPERREL_GROUP_AGG];
+	PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
+
+	RelOptInfo *partially_grouped_rel =
+		fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, input_rel->relids);
+	partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
+	partially_grouped_rel->reloptkind = input_rel->reloptkind;
+	partially_grouped_rel->serverid = input_rel->serverid;
+	partially_grouped_rel->userid = input_rel->userid;
+	partially_grouped_rel->useridiscurrent = input_rel->useridiscurrent;
+	partially_grouped_rel->fdwroutine = input_rel->fdwroutine;
+	partially_grouped_rel->reltarget = partial_grouping_target;
+
+	/* Get and iterate over sub paths */
+	List *subpaths = NIL;
+	if (IsA(cheapest_partial_path, AppendPath))
+	{
+		AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
+		subpaths = append_path->subpaths;
+	}
+	else if (IsA(cheapest_partial_path, MergeAppendPath))
+	{
+		MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
+		subpaths = merge_append_path->subpaths;
+	}
+	else if (ts_is_chunk_append_path(cheapest_partial_path))
+	{
+		CustomPath *custom_path = castNode(CustomPath, cheapest_partial_path);
+		subpaths = custom_path->custom_paths;
+	}
+	else
+	{
+		/* Aggregation pushdown is not supported for other path types so far */
+		return;
+	}
+
+	Assert(subpaths != NIL);
+
+	ListCell *lc;
+	List *new_subpaths = NIL;
+	foreach (lc, subpaths)
+	{
+		Path *subpath = lfirst(lc);
+
+		Assert(subpath->parallel_safe);
+		Assert(subpath->parent->partial_pathlist != NIL);
+
+		/* Translate targetlist for partition */
+		AppendRelInfo *appinfo = ts_get_appendrelinfo(root, subpath->parent->relid, false);
+		PathTarget *mypartialtarget = copy_pathtarget(partial_grouping_target);
+		mypartialtarget->exprs =
+			castNode(List,
+					 adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
+
+		Path *partial_path = (Path *) create_agg_path(root,
+													  subpath->parent,
+													  subpath,
+													  mypartialtarget,
+													  AGG_PLAIN,
+													  AGGSPLIT_INITIAL_SERIAL,
+													  parse->groupClause,
+													  NIL,
+													  &agg_partial_costs,
+													  d_num_partial_groups);
+
+		new_subpaths = lappend(new_subpaths, partial_path);
+	}
+
+	if (IsA(cheapest_partial_path, AppendPath))
+	{
+		AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
+		append_path->subpaths = new_subpaths;
+	}
+	else if (IsA(cheapest_partial_path, MergeAppendPath))
+	{
+		MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
+		merge_append_path->subpaths = new_subpaths;
+	}
+	else if (ts_is_chunk_append_path(cheapest_partial_path))
+	{
+		CustomPath *custom_path = castNode(CustomPath, cheapest_partial_path);
+		custom_path->custom_paths = new_subpaths;
+	}
+	else
+	{
+		Assert(false);
+	}
+
+	double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
+	cheapest_partial_path->pathtarget = partial_grouping_target;
+
+	Path *partial_path = (Path *) create_gather_path(root,
+													 partially_grouped_rel,
+													 cheapest_partial_path,
+													 partially_grouped_rel->reltarget,
+													 NULL,
+													 &total_groups);
+
+	add_path(output_rel,
+			 (Path *) create_agg_path(root,
+									  output_rel,
+									  partial_path,
+									  grouping_target,
+									  AGG_PLAIN,
+									  AGGSPLIT_FINAL_DESERIAL,
+									  parse->groupClause,
+									  (List *) parse->havingQual,
+									  &agg_costs,
+									  d_num_groups));
+}
+
 /*
  * Turn an aggregate relation into a partial aggregate relation if aggregates
  * are enclosed by the partialize_agg function.
@@ -248,163 +405,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 	/* Based on PostgreSQL's create_partitionwise_grouping_paths() */
 	if (ts_guc_enable_vectorized_aggregation && !found_partialize_agg_func)
 	{
-		/* We are only interested in hypertables */
-		if (ht == NULL || hypertable_is_distributed(ht))
-			return false;
-
-		/* Perform aggregation re-planning only if there is an aggregation is requested */
-		if (!parse->hasAggs)
-			return false;
-
-		/* We can only perform a partial partitionwise aggregation, if no grouping is performed */
-		if (parse->groupingSets)
-			return false;
-
-		/* Insufficient support for partial mode. */
-		if (root->hasNonPartialAggs || root->hasNonSerialAggs)
-			return false;
-
-		/* No partial paths are available to construct the input relation, no partial aggregation
-		 * possible */
-		if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
-			return false;
-
-		/* Construct aggregation paths with partial aggregate pushdown */
-		Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
-
-		output_rel->pathlist = NIL;
-		output_rel->partial_pathlist = NIL;
-
-		AggClauseCosts agg_partial_costs;
-		AggClauseCosts agg_final_costs;
-
-		MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
-		MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
-
-		Assert(&agg_partial_costs);
-		Assert(&agg_final_costs);
-
-		double d_num_partial_groups = 1;
-		double d_num_groups = 1;
-		AggClauseCosts agg_costs;
-
-		/* Construct partial group agg upper rel */
-		PathTarget *grouping_target = root->upper_targets[UPPERREL_GROUP_AGG];
-		PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
-
-		RelOptInfo *partially_grouped_rel =
-			fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, input_rel->relids);
-		partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
-		partially_grouped_rel->reloptkind = input_rel->reloptkind;
-		partially_grouped_rel->serverid = input_rel->serverid;
-		partially_grouped_rel->userid = input_rel->userid;
-		partially_grouped_rel->useridiscurrent = input_rel->useridiscurrent;
-		partially_grouped_rel->fdwroutine = input_rel->fdwroutine;
-		partially_grouped_rel->reltarget = partial_grouping_target;
-
-		/* Get and iterate over sub paths */
-		List *subpaths = NIL;
-		if (IsA(cheapest_partial_path, AppendPath))
-		{
-			AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
-			subpaths = append_path->subpaths;
-		}
-		else if (IsA(cheapest_partial_path, MergeAppendPath))
-		{
-			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
-			subpaths = merge_append_path->subpaths;
-		}
-		else if(ts_is_chunk_append_path(cheapest_partial_path))
-		{
-			CustomPath *custom_path = castNode(CustomPath, cheapest_partial_path);
-			subpaths = custom_path->custom_paths;
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("unknown path type"),
-					 errhint("....")));
-		}
-
-		Assert(subpaths != NIL);
-
-		ListCell *lc;
-		List *new_subpaths = NIL;
-		foreach (lc, subpaths)
-		{
-			Path *subpath = lfirst(lc);
-
-			Assert(subpath->parallel_safe);
-			Assert(subpath->parent->partial_pathlist != NIL);
-
-			/* Translate targetlist for partition */
-			AppendRelInfo *appinfo = ts_get_appendrelinfo(root, subpath->parent->relid, false);
-			PathTarget *mypartialtarget = copy_pathtarget(partial_grouping_target);
-			mypartialtarget->exprs =
-				castNode(List,
-						 adjust_appendrel_attrs(root,
-												(Node *) mypartialtarget->exprs,
-												1,
-												&appinfo));
-
-			Path *partial_path = (Path *) create_agg_path(root,
-														  subpath->parent,
-														  subpath,
-														  mypartialtarget,
-														  AGG_PLAIN,
-														  AGGSPLIT_INITIAL_SERIAL,
-														  parse->groupClause,
-														  NIL,
-														  &agg_partial_costs,
-														  d_num_partial_groups);
-
-			new_subpaths = lappend(new_subpaths, partial_path);
-		}
-
-		if (IsA(cheapest_partial_path, AppendPath))
-		{
-			AppendPath *append_path = castNode(AppendPath, cheapest_partial_path);
-			append_path->subpaths = new_subpaths;
-		}
-		else if (IsA(cheapest_partial_path, MergeAppendPath))
-		{
-			MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_partial_path);
-			merge_append_path->subpaths = new_subpaths;
-		}
-		else if(ts_is_chunk_append_path(cheapest_partial_path))
-		{
-			CustomPath *custom_path = castNode(CustomPath, cheapest_partial_path);
-			custom_path->custom_paths = new_subpaths;
-		}
-		else
-		{
-			Assert(false);
-		}
-
-		double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
-		cheapest_partial_path->pathtarget = partial_grouping_target;
-
-		Path *partial_path = (Path *) create_gather_path(root,
-														 partially_grouped_rel,
-														 cheapest_partial_path,
-														 partially_grouped_rel->reltarget,
-														 NULL,
-														 &total_groups);
-
-		add_path(output_rel,
-				 (Path *) create_agg_path(root,
-										  output_rel,
-										  partial_path,
-										  grouping_target,
-										  AGG_PLAIN,
-										  AGGSPLIT_FINAL_DESERIAL,
-										  parse->groupClause,
-										  (List *) parse->havingQual,
-										  &agg_costs,
-										  d_num_groups));
-
-		return true;
+		pushdown_partial_agg(root, ht, input_rel, output_rel);
 	}
 
 	if (!found_partialize_agg_func)
