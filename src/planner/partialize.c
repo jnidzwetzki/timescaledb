@@ -225,7 +225,15 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	output_rel->pathlist = NIL;
 	output_rel->partial_pathlist = NIL;
 
-	double d_num_groups = 1;
+	bool can_sort = grouping_is_sortable(parse->groupClause);
+	bool can_hash = grouping_is_hashable(parse->groupClause) && ! parse->groupingSets;
+
+	/* No sorting or hashing possible, nothing to do for us */
+	if(! can_sort && ! can_hash)
+		return;
+
+	double d_num_groups = 1; //TODO
+	//double d_num_groups = ts_estimate_group(root, cheapest_partial_path->rows);
 
 	/* Construct partial group agg upper rel */
 	RelOptInfo *partially_grouped_rel =
@@ -303,18 +311,35 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 			castNode(List,
 					 adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
 
-		Path *partial_path = (Path *) create_agg_path(root,
-													  subpath->parent,
-													  subpath,
-													  mypartialtarget,
-													  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-													  AGGSPLIT_INITIAL_SERIAL,
-													  parse->groupClause,
-													  NIL,
-													  &agg_partial_costs,
-													  d_num_groups);
+		if(can_sort) 
+		{
+			Path *partial_path = (Path *) create_agg_path(root,
+														subpath->parent,
+														subpath,
+														mypartialtarget,
+														parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+														AGGSPLIT_INITIAL_SERIAL,
+														parse->groupClause,
+														NIL,
+														&agg_partial_costs,
+														d_num_groups);
 
-		new_subpaths = lappend(new_subpaths, partial_path);
+			new_subpaths = lappend(new_subpaths, partial_path);
+		}
+
+		if(can_hash)
+		{
+			add_path(grouped_rel, (Path *)
+					 create_agg_path(root, grouped_rel,
+									 cheapest_path,
+									 grouped_rel->reltarget,
+									 AGG_HASHED,
+									 AGGSPLIT_SIMPLE,
+									 parse->groupClause,
+									 havingQual,
+									 agg_costs,
+									 dNumGroups));
+		}
 	}
 
 	if (IsA(cheapest_partial_path, AppendPath))
@@ -347,6 +372,8 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 													 NULL,
 													 &total_groups);
 
+	if(can_sort)
+	{
 	add_path(output_rel,
 			 (Path *) create_agg_path(root,
 									  output_rel,
@@ -358,6 +385,12 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 									  (List *) parse->havingQual,
 									  &agg_final_costs,
 									  d_num_groups));
+	}
+
+	if(can_hash)
+	{
+		// TODO
+	}
 }
 
 /*
