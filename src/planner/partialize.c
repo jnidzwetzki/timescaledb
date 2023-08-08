@@ -12,8 +12,9 @@
 #include <optimizer/appendinfo.h>
 #include <optimizer/cost.h>
 #include <optimizer/optimizer.h>
-#include <optimizer/planner.h>
 #include <optimizer/pathnode.h>
+#include <optimizer/planner.h>
+#include <optimizer/prep.h>
 #include <optimizer/tlist.h>
 #include <parser/parse_func.h>
 #include <utils/lsyscache.h>
@@ -192,7 +193,8 @@ partialize_agg_paths(RelOptInfo *rel)
 }
 
 static void
-pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, RelOptInfo *output_rel)
+pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
+					 RelOptInfo *output_rel)
 {
 	Query *parse = root->parse;
 
@@ -200,7 +202,7 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, R
 	if (ht == NULL || hypertable_is_distributed(ht))
 		return;
 
-	/* Perform aggregation re-planning only if there is an aggregation is requested */
+	/* Perform partial aggregation planning only if there is an aggregation is requested */
 	if (!parse->hasAggs)
 		return;
 
@@ -223,23 +225,9 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, R
 	output_rel->pathlist = NIL;
 	output_rel->partial_pathlist = NIL;
 
-	AggClauseCosts agg_partial_costs;
-	AggClauseCosts agg_final_costs;
-
-	MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
-	MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
-
-	Assert(&agg_partial_costs);
-	Assert(&agg_final_costs);
-
-	double d_num_partial_groups = 1;
 	double d_num_groups = 1;
-	AggClauseCosts agg_costs;
 
 	/* Construct partial group agg upper rel */
-	PathTarget *grouping_target = root->upper_targets[UPPERREL_GROUP_AGG];
-	PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
-
 	RelOptInfo *partially_grouped_rel =
 		fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, input_rel->relids);
 	partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
@@ -248,7 +236,31 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, R
 	partially_grouped_rel->userid = input_rel->userid;
 	partially_grouped_rel->useridiscurrent = input_rel->useridiscurrent;
 	partially_grouped_rel->fdwroutine = input_rel->fdwroutine;
+
+	/* Build target list for partial aggregate paths */
+	PathTarget *grouping_target = output_rel->reltarget;
+	PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
 	partially_grouped_rel->reltarget = partial_grouping_target;
+
+	/* Determine costs for aggregations */
+	AggClauseCosts agg_partial_costs;
+	AggClauseCosts agg_final_costs;
+
+	MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
+	MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
+
+	/* partial phase */
+	get_agg_clause_costs_compat(root,
+								(Node *) partial_grouping_target->exprs,
+								AGGSPLIT_INITIAL_SERIAL,
+								&agg_partial_costs);
+
+	/* final phase */
+	get_agg_clause_costs_compat(root,
+								(Node *) target->exprs,
+								AGGSPLIT_FINAL_DESERIAL,
+								&agg_final_costs);
+	get_agg_clause_costs_compat(root, parse->havingQual, AGGSPLIT_FINAL_DESERIAL, &agg_final_costs);
 
 	/* Get and iterate over sub paths */
 	List *subpaths = NIL;
@@ -295,12 +307,12 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, R
 													  subpath->parent,
 													  subpath,
 													  mypartialtarget,
-													  AGG_PLAIN,
+													  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
 													  AGGSPLIT_INITIAL_SERIAL,
 													  parse->groupClause,
 													  NIL,
 													  &agg_partial_costs,
-													  d_num_partial_groups);
+													  d_num_groups);
 
 		new_subpaths = lappend(new_subpaths, partial_path);
 	}
@@ -340,11 +352,11 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel, R
 									  output_rel,
 									  partial_path,
 									  grouping_target,
-									  AGG_PLAIN,
+									  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
 									  AGGSPLIT_FINAL_DESERIAL,
 									  parse->groupClause,
 									  (List *) parse->havingQual,
-									  &agg_costs,
+									  &agg_final_costs,
 									  d_num_groups));
 }
 
