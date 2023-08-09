@@ -13,6 +13,7 @@
 #include <optimizer/cost.h>
 #include <optimizer/optimizer.h>
 #include <optimizer/pathnode.h>
+#include <optimizer/paths.h>
 #include <optimizer/planner.h>
 #include <optimizer/prep.h>
 #include <optimizer/tlist.h>
@@ -226,13 +227,13 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	output_rel->partial_pathlist = NIL;
 
 	bool can_sort = grouping_is_sortable(parse->groupClause);
-	bool can_hash = grouping_is_hashable(parse->groupClause) && ! parse->groupingSets;
+	bool can_hash = grouping_is_hashable(parse->groupClause) && !parse->groupingSets;
 
 	/* No sorting or hashing possible, nothing to do for us */
-	if(! can_sort && ! can_hash)
+	if (!can_sort && !can_hash)
 		return;
 
-	double d_num_groups = ts_estimate_group(root, cheapest_partial_path->rows);
+	double d_num_groups = 1; // ts_estimate_group(root, cheapest_partial_path->rows); // TODO
 
 	/* Construct partial group agg upper rel */
 	RelOptInfo *partially_grouped_rel =
@@ -310,35 +311,55 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 			castNode(List,
 					 adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
 
-		if(can_sort) 
-		{
-			Path *partial_path = (Path *) create_agg_path(root,
-														subpath->parent,
-														subpath,
-														mypartialtarget,
-														parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-														AGGSPLIT_INITIAL_SERIAL,
-														parse->groupClause,
-														NIL,
-														&agg_partial_costs,
-														d_num_groups);
+		Path *partial_path = NULL;
 
-			new_subpaths = lappend(new_subpaths, partial_path);
+		if (can_sort)
+		{
+			int presorted_keys;
+			bool is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
+														 subpath->pathkeys,
+														 &presorted_keys);
+
+			/* Use a copy of the subpath thigh might get modified (i.e., sorted) */
+			Path *sorted_path = subpath;
+
+			if (!is_sorted)
+			{
+				sorted_path = (Path *)
+					create_sort_path(root, subpath->parent, sorted_path, root->group_pathkeys, -1.0);
+			}
+
+			partial_path = (Path *) create_agg_path(root,
+													sorted_path->parent,
+													sorted_path,
+													mypartialtarget,
+													parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+													AGGSPLIT_INITIAL_SERIAL,
+													parse->groupClause,
+													NIL,
+													&agg_partial_costs,
+													d_num_groups);
 		}
 
-		if(can_hash)
+		if (can_hash)
 		{
-			// add_path(grouped_rel, (Path *)
-			// 		 create_agg_path(root, grouped_rel,
-			// 						 cheapest_path,
-			// 						 grouped_rel->reltarget,
-			// 						 AGG_HASHED,
-			// 						 AGGSPLIT_SIMPLE,
-			// 						 parse->groupClause,
-			// 						 havingQual,
-			// 						 agg_costs,
-			// 						 dNumGroups));
+			Path *hash_path = (Path *) create_agg_path(root,
+													   subpath->parent,
+													   subpath,
+													   mypartialtarget,
+													   AGG_HASHED,
+													   AGGSPLIT_INITIAL_SERIAL,
+													   parse->groupClause,
+													   NIL,
+													   &agg_partial_costs,
+													   d_num_groups);
+
+			if (partial_path == NULL || hash_path->total_cost < partial_path->total_cost)
+				partial_path = hash_path;
 		}
+
+		Assert(partial_path != NULL);
+		new_subpaths = lappend(new_subpaths, partial_path);
 	}
 
 	if (IsA(cheapest_partial_path, AppendPath))
@@ -371,22 +392,22 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 													 NULL,
 													 &total_groups);
 
-	if(can_sort)
+	if (can_sort)
 	{
-	add_path(output_rel,
-			 (Path *) create_agg_path(root,
-									  output_rel,
-									  partial_path,
-									  grouping_target,
-									  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-									  AGGSPLIT_FINAL_DESERIAL,
-									  parse->groupClause,
-									  (List *) parse->havingQual,
-									  &agg_final_costs,
-									  d_num_groups));
+		add_path(output_rel,
+				 (Path *) create_agg_path(root,
+										  output_rel,
+										  partial_path,
+										  grouping_target,
+										  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+										  AGGSPLIT_FINAL_DESERIAL,
+										  parse->groupClause,
+										  (List *) parse->havingQual,
+										  &agg_final_costs,
+										  d_num_groups));
 	}
 
-	if(can_hash)
+	if (can_hash)
 	{
 		// TODO
 	}
