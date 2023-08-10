@@ -195,7 +195,7 @@ partialize_agg_paths(RelOptInfo *rel)
 
 static void
 pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
-					 RelOptInfo *output_rel)
+					 RelOptInfo *output_rel, void *extra)
 {
 	Query *parse = root->parse;
 
@@ -220,18 +220,20 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
 		return;
 
+	bool can_sort = grouping_is_sortable(parse->groupClause);
+	bool can_hash = grouping_is_hashable(parse->groupClause) &&
+					!parse->groupingSets; /* see consider_groupingsets_paths */
+
+	/* No sorted or hashed aggregation possible, nothing to do for us */
+	if (!can_sort && !can_hash)
+		return;
+
 	/* Construct aggregation paths with partial aggregate pushdown */
 	Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
+	/* Replan aggregation path */
 	output_rel->pathlist = NIL;
 	output_rel->partial_pathlist = NIL;
-
-	bool can_sort = grouping_is_sortable(parse->groupClause);
-	bool can_hash = grouping_is_hashable(parse->groupClause) && !parse->groupingSets;
-
-	/* No sorting or hashing possible, nothing to do for us */
-	if (!can_sort && !can_hash)
-		return;
 
 	double d_num_groups = 1; // ts_estimate_group(root, cheapest_partial_path->rows); // TODO
 
@@ -251,24 +253,10 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	partially_grouped_rel->reltarget = partial_grouping_target;
 
 	/* Determine costs for aggregations */
-	AggClauseCosts agg_partial_costs;
-	AggClauseCosts agg_final_costs;
-
-	MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
-	MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
-
-	/* partial phase */
-	get_agg_clause_costs_compat(root,
-								(Node *) partial_grouping_target->exprs,
-								AGGSPLIT_INITIAL_SERIAL,
-								&agg_partial_costs);
-
-	/* final phase */
-	get_agg_clause_costs_compat(root,
-								(Node *) target->exprs,
-								AGGSPLIT_FINAL_DESERIAL,
-								&agg_final_costs);
-	get_agg_clause_costs_compat(root, parse->havingQual, AGGSPLIT_FINAL_DESERIAL, &agg_final_costs);
+	Assert(extra != NULL);
+	GroupPathExtraData *extra_data = (GroupPathExtraData *) extra;
+	AggClauseCosts *agg_partial_costs = &extra_data->agg_partial_costs;
+	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
 
 	/* Get and iterate over sub paths */
 	List *subpaths = NIL;
@@ -325,8 +313,11 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 
 			if (!is_sorted)
 			{
-				sorted_path = (Path *)
-					create_sort_path(root, subpath->parent, sorted_path, root->group_pathkeys, -1.0);
+				sorted_path = (Path *) create_sort_path(root,
+														subpath->parent,
+														sorted_path,
+														root->group_pathkeys,
+														-1.0);
 			}
 
 			partial_path = (Path *) create_agg_path(root,
@@ -337,7 +328,7 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 													AGGSPLIT_INITIAL_SERIAL,
 													parse->groupClause,
 													NIL,
-													&agg_partial_costs,
+													agg_partial_costs,
 													d_num_groups);
 		}
 
@@ -351,7 +342,7 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 													   AGGSPLIT_INITIAL_SERIAL,
 													   parse->groupClause,
 													   NIL,
-													   &agg_partial_costs,
+													   agg_partial_costs,
 													   d_num_groups);
 
 			if (partial_path == NULL || hash_path->total_cost < partial_path->total_cost)
@@ -403,13 +394,23 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 										  AGGSPLIT_FINAL_DESERIAL,
 										  parse->groupClause,
 										  (List *) parse->havingQual,
-										  &agg_final_costs,
+										  agg_final_costs,
 										  d_num_groups));
 	}
 
 	if (can_hash)
 	{
-		// TODO
+		add_path(output_rel,
+				 (Path *) create_agg_path(root,
+										  output_rel,
+										  partial_path,
+										  grouping_target,
+										  AGG_HASHED,
+										  AGGSPLIT_FINAL_DESERIAL,
+										  parse->groupClause,
+										  (List *) parse->havingQual,
+										  agg_final_costs,
+										  d_num_groups));
 	}
 }
 
@@ -454,7 +455,7 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
  */
 bool
 ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
-							   RelOptInfo *output_rel)
+							   RelOptInfo *output_rel, void *extra)
 {
 	Query *parse = root->parse;
 	bool found_partialize_agg_func;
@@ -470,7 +471,7 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 	/* Based on PostgreSQL's create_partitionwise_grouping_paths() */
 	if (ts_guc_enable_vectorized_aggregation && !found_partialize_agg_func)
 	{
-		pushdown_partial_agg(root, ht, input_rel, output_rel);
+		pushdown_partial_agg(root, ht, input_rel, output_rel, extra);
 	}
 
 	if (!found_partialize_agg_func)

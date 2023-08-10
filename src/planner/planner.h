@@ -98,7 +98,7 @@ typedef enum PartializeAggFixAggref
 Hypertable *ts_planner_get_hypertable(const Oid relid, const unsigned int flags);
 bool has_partialize_function(Node *node, PartializeAggFixAggref fix_aggref);
 bool ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
-									RelOptInfo *output_rel);
+									RelOptInfo *output_rel, void *extra);
 
 extern void ts_plan_add_hashagg(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 extern void ts_preprocess_first_last_aggregates(PlannerInfo *root, List *tlist);

@@ -1546,7 +1546,7 @@ timescaledb_create_upper_paths_hook(PlannerInfo *root, UpperRelationKind stage,
 			/* Existing AggPaths are modified here.
 			 * No new AggPaths should be added after this if there
 			 * are partials. */
-			partials_found = ts_plan_process_partialize_agg(root, ht, input_rel, output_rel);
+			partials_found = ts_plan_process_partialize_agg(root, ht, input_rel, output_rel, extra);
 		}
 	}
 
