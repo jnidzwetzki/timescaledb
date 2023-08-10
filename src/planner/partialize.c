@@ -20,6 +20,7 @@
 #include <parser/parse_func.h>
 #include <utils/lsyscache.h>
 
+#include "debug_assert.h"
 #include "planner.h"
 #include "nodes/print.h"
 #include "extension_constants.h"
@@ -193,6 +194,23 @@ partialize_agg_paths(RelOptInfo *rel)
 	return has_combine;
 }
 
+static AggPath*
+get_existing_agg_path(RelOptInfo *output_rel)
+{
+	ListCell *lc;
+	foreach (lc, output_rel->pathlist)
+	{
+		Path *path = lfirst(lc);
+		if(IsA(path, AggPath))
+		{
+			AggPath* existing_agg_path = castNode(AggPath, path);
+			return existing_agg_path;
+		}
+	}
+
+	return NULL;
+}
+
 static void
 pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 					 RelOptInfo *output_rel, void *extra)
@@ -231,11 +249,11 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	/* Construct aggregation paths with partial aggregate pushdown */
 	Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
-	/* Replan aggregation path */
-	output_rel->pathlist = NIL;
-	output_rel->partial_pathlist = NIL;
-
-	double d_num_groups = 1; // ts_estimate_group(root, cheapest_partial_path->rows); // TODO
+	/* Determine the number of groups from the already planned aggregation */
+	AggPath *existing_agg_path = get_existing_agg_path(output_rel);
+	Assert(existing_agg_path != NULL);
+	double d_num_groups = existing_agg_path->numGroups;
+	Assert(d_num_groups > 0);
 
 	/* Construct partial group agg upper rel */
 	RelOptInfo *partially_grouped_rel =
@@ -277,9 +295,13 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	}
 	else
 	{
-		/* Aggregation pushdown is not supported for other path types so far */
+		/* Aggregation push-down is not supported for other path types so far */
 		return;
 	}
+
+	/* Replan aggregation path */
+	output_rel->pathlist = NIL;
+	output_rel->partial_pathlist = NIL;
 
 	Assert(subpaths != NIL);
 
@@ -290,7 +312,6 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 		Path *subpath = lfirst(lc);
 
 		Assert(subpath->parallel_safe);
-		Assert(subpath->parent->partial_pathlist != NIL);
 
 		/* Translate targetlist for partition */
 		AppendRelInfo *appinfo = ts_get_appendrelinfo(root, subpath->parent->relid, false);
@@ -370,7 +391,8 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 	}
 	else
 	{
-		Assert(false);
+		/* Should never happen, already checked above */
+		Ensure(false, "Unknown path type");
 	}
 
 	double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;

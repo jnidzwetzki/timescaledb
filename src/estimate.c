@@ -211,6 +211,8 @@ ts_estimate_group(PlannerInfo *root, double path_rows)
 	bool found = false;
 	List *new_group_expr = NIL;
 
+	Assert(parse->groupClause && !parse->groupingSets);
+
 	group_exprs = get_sortgrouplist_exprs(parse->groupClause, parse->targetList);
 
 	foreach (lc, group_exprs)
