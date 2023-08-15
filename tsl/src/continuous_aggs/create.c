@@ -412,16 +412,17 @@ mattablecolumninfo_add_mattable_index(MatTableColumnInfo *matcolinfo, Hypertable
 		char *grpcolname = (char *) lfirst(le);
 		IndexElem grpelem = { .type = T_IndexElem, .name = grpcolname };
 		stmt.indexParams = list_make2(&grpelem, &timeelem);
-		indxaddr = DefineIndex(ht->main_table_relid,
-							   &stmt,
-							   InvalidOid, /* indexRelationId */
-							   InvalidOid, /* parentIndexId */
-							   InvalidOid, /* parentConstraintId */
-							   false,	   /* is_alter_table */
-							   false,	   /* check_rights */
-							   false,	   /* check_not_in_use */
-							   false,	   /* skip_build */
-							   false);	   /* quiet */
+		indxaddr = DefineIndexCompat(ht->main_table_relid,
+									 &stmt,
+									 InvalidOid, /* indexRelationId */
+									 InvalidOid, /* parentIndexId */
+									 InvalidOid, /* parentConstraintId */
+									 -1,		 /* total_parts */
+									 false,		 /* is_alter_table */
+									 false,		 /* check_rights */
+									 false,		 /* check_not_in_use */
+									 false,		 /* skip_build */
+									 false);	 /* quiet */
 		indxtuple = SearchSysCache1(RELOID, ObjectIdGetDatum(indxaddr.objectId));
 
 		if (!HeapTupleIsValid(indxtuple))
@@ -629,7 +630,7 @@ fixup_userview_query_tlist(Query *userquery, List *tlist_aliases)
 			if (tle->resjunk)
 				continue;
 			tle->resname = pstrdup(strVal(lfirst(alist_item)));
-			alist_item = lnext_compat(tlist_aliases, alist_item);
+			alist_item = lnext(tlist_aliases, alist_item);
 			if (alist_item == NULL)
 				break; /* done assigning aliases */
 		}

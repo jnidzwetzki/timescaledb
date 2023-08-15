@@ -89,8 +89,19 @@
 									update,                                                        \
 									noDupErr,                                                      \
 									specConflict,                                                  \
-									arbiterIndexes)                                                \
+									arbiterIndexes,                                                \
+									onlySummarizing)                                               \
 	ExecInsertIndexTuples(slot, estate, noDupErr, specConflict, arbiterIndexes)
+#elif PG16_LT
+#define ExecInsertIndexTuplesCompat(rri,                                                           \
+									slot,                                                          \
+									estate,                                                        \
+									update,                                                        \
+									noDupErr,                                                      \
+									specConflict,                                                  \
+									arbiterIndexes,                                                \
+									onlySummarizing)                                               \
+	ExecInsertIndexTuples(rri, slot, estate, update, noDupErr, specConflict, arbiterIndexes)
 #else
 #define ExecInsertIndexTuplesCompat(rri,                                                           \
 									slot,                                                          \
@@ -98,8 +109,16 @@
 									update,                                                        \
 									noDupErr,                                                      \
 									specConflict,                                                  \
-									arbiterIndexes)                                                \
-	ExecInsertIndexTuples(rri, slot, estate, update, noDupErr, specConflict, arbiterIndexes)
+									arbiterIndexes,                                                \
+									onlySummarizing)                                               \
+	ExecInsertIndexTuples(rri,                                                                     \
+						  slot,                                                                    \
+						  estate,                                                                  \
+						  update,                                                                  \
+						  noDupErr,                                                                \
+						  specConflict,                                                            \
+						  arbiterIndexes,                                                          \
+						  onlySummarizing)
 #endif
 
 /* PG14 fixes a bug in miscomputation of relids set in pull_varnos. The bugfix
@@ -317,31 +336,7 @@ get_reindex_options(ReindexStmt *stmt)
 	get_agg_clause_costs(root, split, costs)
 #endif
 
-/* PG13 added a dstlen parameter to pg_b64_decode and pg_b64_encode */
-#if PG13_LT
-#define pg_b64_encode_compat(src, srclen, dst, dstlen) pg_b64_encode((src), (srclen), (dst))
-#define pg_b64_decode_compat(src, srclen, dst, dstlen) pg_b64_decode((src), (srclen), (dst))
-#else
-#define pg_b64_encode_compat(src, srclen, dst, dstlen)                                             \
-	pg_b64_encode((src), (srclen), (dst), (dstlen))
-#define pg_b64_decode_compat(src, srclen, dst, dstlen)                                             \
-	pg_b64_decode((src), (srclen), (dst), (dstlen))
-#endif
-
-/* PG13 changes the List implementation from a linked list to an array
- * while most of the API functions did not change a few them have slightly
- * different signature in PG13, additionally the list_make5 functions
- * got removed. PG14 adds the list_make5 macros back. */
-#if PG13_LT
-#define lnext_compat(l, lc) lnext((lc))
-#define list_delete_cell_compat(l, lc, prev) list_delete_cell((l), (lc), (prev))
-#define for_each_cell_compat(cell, list, initcell) for_each_cell ((cell), (initcell))
-#else
-#define lnext_compat(l, lc) lnext((l), (lc))
-#define list_delete_cell_compat(l, lc, prev) list_delete_cell((l), (lc))
-#define for_each_cell_compat(cell, list, initcell) for_each_cell (cell, list, initcell)
-#endif
-
+/* list_make5 macro definition was removed in PG13 but was added back in PG14 */
 #if PG13
 #define list_make5(x1, x2, x3, x4, x5) lappend(list_make4(x1, x2, x3, x4), x5)
 #define list_make5_oid(x1, x2, x3, x4, x5) lappend_oid(list_make4_oid(x1, x2, x3, x4), x5)
@@ -353,21 +348,6 @@ get_reindex_options(ReindexStmt *stmt)
  */
 #define lfifth(l) lfirst(list_nth_cell(l, 4))
 #define lfifth_int(l) lfirst_int(list_nth_cell(l, 4))
-
-/* PG13 removes the natts parameter from map_variable_attnos */
-#if PG13_LT
-#define map_variable_attnos_compat(node, varno, sublevels_up, map, natts, rowtype, found_wholerow) \
-	map_variable_attnos((node),                                                                    \
-						(varno),                                                                   \
-						(sublevels_up),                                                            \
-						(map),                                                                     \
-						(natts),                                                                   \
-						(rowtype),                                                                 \
-						(found_wholerow))
-#else
-#define map_variable_attnos_compat(node, varno, sublevels_up, map, natts, rowtype, found_wholerow) \
-	map_variable_attnos((node), (varno), (sublevels_up), (map), (rowtype), (found_wholerow))
-#endif
 
 /* PG14 adds estinfo parameter to estimate_num_groups for additional context
  * about the estimation
@@ -531,20 +511,7 @@ get_reindex_options(ReindexStmt *stmt)
 /*
  * List sorting functions differ between the PG versions.
  */
-#if PG13_LT
-inline static int
-list_int_cmp_compat(const void *p1, const void *p2)
-{
-	int v1 = *((int *) p1);
-	int v2 = *((int *) p2);
-
-	if (v1 < v2)
-		return -1;
-	if (v1 > v2)
-		return 1;
-	return 0;
-}
-#elif PG13
+#if PG14_LT
 inline static int
 list_int_cmp_compat(const ListCell *p1, const ListCell *p2)
 {
@@ -557,14 +524,8 @@ list_int_cmp_compat(const ListCell *p1, const ListCell *p2)
 		return 1;
 	return 0;
 }
-#elif PG14_GE
-#define list_int_cmp_compat list_int_cmp
-#endif
-
-#if PG13_LT
-#define list_sort_compat(list, comparator) list_qsort((list), (comparator))
 #else
-#define list_sort_compat(list, comparator) (list_sort((list), (comparator)), (list))
+#define list_int_cmp_compat list_int_cmp
 #endif
 
 /*
@@ -774,6 +735,110 @@ RelationGetSmgr(Relation rel)
 #else
 #define pg_nodiscard
 #endif
+#endif
+
+/*
+ * PG16 adds a new parameter to DefineIndex, total_parts, that takes
+ * in the total number of direct and indirect partitions of the relation.
+ *
+ * https://github.com/postgres/postgres/commit/27f5c712
+ */
+#if PG16_LT
+#define DefineIndexCompat(relationId,                                                              \
+						  stmt,                                                                    \
+						  indexRelationId,                                                         \
+						  parentIndexId,                                                           \
+						  parentConstraintId,                                                      \
+						  total_parts,                                                             \
+						  is_alter_table,                                                          \
+						  check_rights,                                                            \
+						  check_not_in_use,                                                        \
+						  skip_build,                                                              \
+						  quiet)                                                                   \
+	DefineIndex(relationId,                                                                        \
+				stmt,                                                                              \
+				indexRelationId,                                                                   \
+				parentIndexId,                                                                     \
+				parentConstraintId,                                                                \
+				is_alter_table,                                                                    \
+				check_rights,                                                                      \
+				check_not_in_use,                                                                  \
+				skip_build,                                                                        \
+				quiet)
+#else
+#define DefineIndexCompat(relationId,                                                              \
+						  stmt,                                                                    \
+						  indexRelationId,                                                         \
+						  parentIndexId,                                                           \
+						  parentConstraintId,                                                      \
+						  total_parts,                                                             \
+						  is_alter_table,                                                          \
+						  check_rights,                                                            \
+						  check_not_in_use,                                                        \
+						  skip_build,                                                              \
+						  quiet)                                                                   \
+	DefineIndex(relationId,                                                                        \
+				stmt,                                                                              \
+				indexRelationId,                                                                   \
+				parentIndexId,                                                                     \
+				parentConstraintId,                                                                \
+				total_parts,                                                                       \
+				is_alter_table,                                                                    \
+				check_rights,                                                                      \
+				check_not_in_use,                                                                  \
+				skip_build,                                                                        \
+				quiet)
+#endif
+
+#if PG16_LT
+#include <catalog/pg_database_d.h>
+#include <catalog/pg_foreign_server_d.h>
+#include <catalog/pg_namespace_d.h>
+#include <catalog/pg_proc_d.h>
+#include <catalog/pg_tablespace_d.h>
+#include <utils/acl.h>
+
+/*
+ * PG16 replaces most aclcheck functions with a common object_aclcheck() function
+ * https://github.com/postgres/postgres/commit/c727f511
+ */
+static inline AclResult
+object_aclcheck(Oid classid, Oid objectid, Oid roleid, AclMode mode)
+{
+	switch (classid)
+	{
+		case DatabaseRelationId:
+			return pg_database_aclcheck(objectid, roleid, mode);
+		case ForeignServerRelationId:
+			return pg_foreign_server_aclcheck(objectid, roleid, mode);
+		case NamespaceRelationId:
+			return pg_namespace_aclcheck(objectid, roleid, mode);
+		case ProcedureRelationId:
+			return pg_proc_aclcheck(objectid, roleid, mode);
+		case TableSpaceRelationId:
+			return pg_tablespace_aclcheck(objectid, roleid, mode);
+		default:
+			Assert(false);
+	}
+	return ACLCHECK_NOT_OWNER;
+}
+
+/*
+ * PG16 replaces pg_foo_ownercheck() functions with a common object_ownercheck() function
+ * https://github.com/postgres/postgres/commit/afbfc029
+ */
+static inline bool
+object_ownercheck(Oid classid, Oid objectid, Oid roleid)
+{
+	switch (classid)
+	{
+		case RelationRelationId:
+			return pg_class_ownercheck(objectid, roleid);
+		default:
+			Assert(false);
+	}
+	return false;
+}
 #endif
 
 #endif /* TIMESCALEDB_COMPAT_H */

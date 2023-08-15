@@ -152,7 +152,7 @@ validate_foreign_server(const ForeignServer *server, AclMode const mode, bool fa
 		return true;
 
 	/* Must have permissions on the server object */
-	aclresult = pg_foreign_server_aclcheck(server->serverid, curuserid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, server->serverid, curuserid, mode);
 
 	valid = (aclresult == ACLCHECK_OK);
 
@@ -1564,9 +1564,6 @@ append_data_node_option(List *new_options, List **current_options, const char *n
 	DefElem *elem;
 	ListCell *lc;
 	bool option_found = false;
-#if PG13_LT
-	ListCell *prev_lc = NULL;
-#endif
 
 	foreach (lc, *current_options)
 	{
@@ -1577,16 +1574,9 @@ append_data_node_option(List *new_options, List **current_options, const char *n
 			option_found = true;
 			/* Remove the option which is replaced so that the remaining
 			 * options can be merged later into an updated list */
-#if PG13_GE
 			*current_options = list_delete_cell(*current_options, lc);
-#else
-			*current_options = list_delete_cell(*current_options, lc, prev_lc);
-#endif
 			break;
 		}
-#if PG13_LT
-		prev_lc = lc;
-#endif
 	}
 
 	elem = makeDefElemExtended(NULL,
@@ -2136,7 +2126,7 @@ data_node_name_list_check_acl(List *data_node_names, AclMode mode)
 		if (mode != ACL_NO_CHECK)
 		{
 			/* Must have permissions on the server object */
-			aclresult = pg_foreign_server_aclcheck(server->serverid, curuserid, mode);
+			aclresult = object_aclcheck(ForeignServerRelationId, server->serverid, curuserid, mode);
 
 			if (aclresult != ACLCHECK_OK)
 				aclcheck_error(aclresult, OBJECT_FOREIGN_SERVER, server->servername);
