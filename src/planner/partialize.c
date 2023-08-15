@@ -194,16 +194,16 @@ partialize_agg_paths(RelOptInfo *rel)
 	return has_combine;
 }
 
-static AggPath*
+static AggPath *
 get_existing_agg_path(RelOptInfo *output_rel)
 {
 	ListCell *lc;
 	foreach (lc, output_rel->pathlist)
 	{
 		Path *path = lfirst(lc);
-		if(IsA(path, AggPath))
+		if (IsA(path, AggPath))
 		{
-			AggPath* existing_agg_path = castNode(AggPath, path);
+			AggPath *existing_agg_path = castNode(AggPath, path);
 			return existing_agg_path;
 		}
 	}
@@ -251,7 +251,9 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 
 	/* Determine the number of groups from the already planned aggregation */
 	AggPath *existing_agg_path = get_existing_agg_path(output_rel);
-	Assert(existing_agg_path != NULL);
+	if (existing_agg_path == NULL)
+		return;
+
 	double d_num_groups = existing_agg_path->numGroups;
 	Assert(d_num_groups > 0);
 
@@ -319,6 +321,11 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 		mypartialtarget->exprs =
 			castNode(List,
 					 adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
+
+		/* Usually done by appy_scanjoin_target_to_path */
+		Assert(list_length(subpath->pathtarget->exprs) ==
+			   list_length(cheapest_partial_path->pathtarget->exprs));
+		subpath->pathtarget->sortgrouprefs = cheapest_partial_path->pathtarget->sortgrouprefs;
 
 		Path *partial_path = NULL;
 
