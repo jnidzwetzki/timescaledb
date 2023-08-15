@@ -309,6 +309,8 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 
 	ListCell *lc;
 	List *new_subpaths = NIL;
+	bool use_hashing = false;
+
 	foreach (lc, subpaths)
 	{
 		Path *subpath = lfirst(lc);
@@ -374,7 +376,10 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 													   d_num_groups);
 
 			if (partial_path == NULL || hash_path->total_cost < partial_path->total_cost)
+			{
 				partial_path = hash_path;
+				use_hashing = true;
+			}
 		}
 
 		Assert(partial_path != NULL);
@@ -412,7 +417,7 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 													 NULL,
 													 &total_groups);
 
-	if (can_sort)
+	if (!use_hashing)
 	{
 		add_path(output_rel,
 				 (Path *) create_agg_path(root,
@@ -426,8 +431,7 @@ pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
 										  agg_final_costs,
 										  d_num_groups));
 	}
-
-	if (can_hash)
+	else
 	{
 		add_path(output_rel,
 				 (Path *) create_agg_path(root,
