@@ -270,85 +270,27 @@ copy_merge_append_path(PlannerInfo *root, MergeAppendPath *path, List *subpaths)
 	return newPath;
 }
 
+static void
+generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptInfo *output_rel,
+						   RelOptInfo *partially_grouped_rel, PathTarget *grouping_target,
+						   bool can_sort, bool can_hash, double d_num_groups,
+						   GroupPathExtraData *extra_data)
+{
+}
+
 /*
- * Convert the aggregation into a partial aggregation and push them down to the chunk level
- *
- * Inspired by PostgreSQL's create_partitionwise_grouping_paths() function
- *
- * Generated aggregation paths:
- *
- * Finalize Aggregate
- *   -> Append
- *      -> Partial Aggregation 1
- *        - Chunk 1
- *      ...
- *      -> Partial Aggregation N
- *        - Chunk N
+ * Generate a partial aggregation path
  */
-void
-ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
-						RelOptInfo *output_rel, void *extra)
+static void
+generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_path,
+								   RelOptInfo *output_rel, RelOptInfo *partially_grouped_rel,
+								   PathTarget *grouping_target, PathTarget *partial_grouping_target,
+								   bool can_sort, bool can_hash, double d_num_groups,
+								   GroupPathExtraData *extra_data)
 {
 	Query *parse = root->parse;
 
-	/* We are only interested in hypertables */
-	if (ht == NULL || hypertable_is_distributed(ht))
-		return;
-
-	/* Perform partial aggregation planning only if there is an aggregation is requested */
-	if (!parse->hasAggs)
-		return;
-
-	/* We can only perform a partial partitionwise aggregation, if no grouping is performed */
-	if (parse->groupingSets)
-		return;
-
-	/* Insufficient support for partial mode. */
-	if (root->hasNonPartialAggs || root->hasNonSerialAggs)
-		return;
-
-	/* No partial paths are available to construct the input relation, no partial aggregation
-	 * possible */
-	if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
-		return;
-
-	bool can_sort = grouping_is_sortable(parse->groupClause);
-	bool can_hash = grouping_is_hashable(parse->groupClause) &&
-					!parse->groupingSets; /* see consider_groupingsets_paths */
-
-	/* No sorted or hashed aggregation possible, nothing to do for us */
-	if (!can_sort && !can_hash)
-		return;
-
-	/* Construct aggregation paths with partial aggregate pushdown */
-	Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
-
-	/* Determine the number of groups from the already planned aggregation */
-	AggPath *existing_agg_path = get_existing_agg_path(output_rel);
-	if (existing_agg_path == NULL)
-		return;
-
-	double d_num_groups = existing_agg_path->numGroups;
-	Assert(d_num_groups > 0);
-
-	/* Construct partial group agg upper rel */
-	RelOptInfo *partially_grouped_rel =
-		fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, input_rel->relids);
-	partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
-	partially_grouped_rel->reloptkind = input_rel->reloptkind;
-	partially_grouped_rel->serverid = input_rel->serverid;
-	partially_grouped_rel->userid = input_rel->userid;
-	partially_grouped_rel->useridiscurrent = input_rel->useridiscurrent;
-	partially_grouped_rel->fdwroutine = input_rel->fdwroutine;
-
-	/* Build target list for partial aggregate paths */
-	PathTarget *grouping_target = output_rel->reltarget;
-	PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
-	partially_grouped_rel->reltarget = partial_grouping_target;
-
 	/* Determine costs for aggregations */
-	Assert(extra != NULL);
-	GroupPathExtraData *extra_data = (GroupPathExtraData *) extra;
 	AggClauseCosts *agg_partial_costs = &extra_data->agg_partial_costs;
 	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
 
@@ -547,6 +489,112 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 											  d_num_groups));
 		}
 	}
+}
+
+/*
+ * Convert the aggregation into a partial aggregation and push them down to the chunk level
+ *
+ * Inspired by PostgreSQL's create_partitionwise_grouping_paths() function
+ *
+ * Generated aggregation paths:
+ *
+ * Finalize Aggregate
+ *   -> Append
+ *      -> Partial Aggregation 1
+ *        - Chunk 1
+ *      ...
+ *      -> Partial Aggregation N
+ *        - Chunk N
+ */
+void
+ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
+						RelOptInfo *output_rel, void *extra)
+{
+	Query *parse = root->parse;
+
+	/* We are only interested in hypertables */
+	if (ht == NULL || hypertable_is_distributed(ht))
+		return;
+
+	/* Perform partial aggregation planning only if there is an aggregation is requested */
+	if (!parse->hasAggs)
+		return;
+
+	/* We can only perform a partial partitionwise aggregation, if no grouping is performed */
+	if (parse->groupingSets)
+		return;
+
+	/* Insufficient support for partial mode. */
+	if (root->hasNonPartialAggs || root->hasNonSerialAggs)
+		return;
+
+	/* No partial paths are available to construct the input relation, no partial aggregation
+	 * possible */
+	if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
+		return;
+
+	bool can_sort = grouping_is_sortable(parse->groupClause);
+	bool can_hash = grouping_is_hashable(parse->groupClause) &&
+					!parse->groupingSets; /* see consider_groupingsets_paths */
+
+	/* No sorted or hashed aggregation possible, nothing to do for us */
+	if (!can_sort && !can_hash)
+		return;
+
+	Assert(extra != NULL);
+	GroupPathExtraData *extra_data = (GroupPathExtraData *) extra;
+
+	/* Construct aggregation paths with partial aggregate pushdown */
+	Path *cheapest_total_path = input_rel->cheapest_total_path;
+	Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
+	Assert(cheapest_total_path != NULL);
+
+	/* Determine the number of groups from the already planned aggregation */
+	AggPath *existing_agg_path = get_existing_agg_path(output_rel);
+	if (existing_agg_path == NULL)
+		return;
+
+	double d_num_groups = existing_agg_path->numGroups;
+	Assert(d_num_groups > 0);
+
+	/* Construct partial group agg upper rel */
+	RelOptInfo *partially_grouped_rel =
+		fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, input_rel->relids);
+	partially_grouped_rel->consider_parallel = input_rel->consider_parallel;
+	partially_grouped_rel->reloptkind = input_rel->reloptkind;
+	partially_grouped_rel->serverid = input_rel->serverid;
+	partially_grouped_rel->userid = input_rel->userid;
+	partially_grouped_rel->useridiscurrent = input_rel->useridiscurrent;
+	partially_grouped_rel->fdwroutine = input_rel->fdwroutine;
+
+	/* Build target list for partial aggregate paths */
+	PathTarget *grouping_target = output_rel->reltarget;
+	PathTarget *partial_grouping_target = ts_make_partial_grouping_target(root, grouping_target);
+	partially_grouped_rel->reltarget = partial_grouping_target;
+
+	/* Generate the aggregation pushdown path */
+	generate_agg_pushdown_path(root,
+							   cheapest_total_path,
+							   output_rel,
+							   partially_grouped_rel,
+							   grouping_target,
+							   can_sort,
+							   can_hash,
+							   d_num_groups,
+							   extra_data);
+
+	/* The same as above but for partial paths */
+	if (cheapest_partial_path != NULL)
+		generate_partial_agg_pushdown_path(root,
+										   cheapest_partial_path,
+										   output_rel,
+										   partially_grouped_rel,
+										   grouping_target,
+										   partial_grouping_target,
+										   can_sort,
+										   can_hash,
+										   d_num_groups,
+										   extra_data);
 }
 
 /*
