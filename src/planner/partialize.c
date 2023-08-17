@@ -270,12 +270,202 @@ copy_merge_append_path(PlannerInfo *root, MergeAppendPath *path, List *subpaths)
 	return newPath;
 }
 
+/*
+ * Generate a total aggregation path
+ */
 static void
 generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptInfo *output_rel,
 						   RelOptInfo *partially_grouped_rel, PathTarget *grouping_target,
-						   bool can_sort, bool can_hash, double d_num_groups,
-						   GroupPathExtraData *extra_data)
+						   PathTarget *partial_grouping_target, bool can_sort, bool can_hash,
+						   double d_num_groups, GroupPathExtraData *extra_data)
 {
+	Query *parse = root->parse;
+
+	/* Determine costs for aggregations */
+	AggClauseCosts *agg_partial_costs = &extra_data->agg_partial_costs;
+	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
+
+	/* Get subpaths */
+	List *subpaths = get_subpaths_from_append_path(cheapest_total_path);
+
+	/* No subpaths available or unsupported append node */
+	if (subpaths == NIL)
+		return;
+
+	/* Replan aggregation path */
+	output_rel->pathlist = NIL;
+
+	/* Generate agg paths on top of the append children */
+	ListCell *lc;
+	List *sorted_subpaths = NIL;
+	List *hashed_subpaths = NIL;
+
+	foreach (lc, subpaths)
+	{
+		Path *subpath = lfirst(lc);
+
+		/* Translate targetlist for partition */
+		AppendRelInfo *appinfo = ts_get_appendrelinfo(root, subpath->parent->relid, false);
+		PathTarget *mypartialtarget = copy_pathtarget(partial_grouping_target);
+		mypartialtarget->exprs =
+			castNode(List,
+					 adjust_appendrel_attrs(root, (Node *) mypartialtarget->exprs, 1, &appinfo));
+
+		/* Usually done by appy_scanjoin_target_to_path */
+		Assert(list_length(subpath->pathtarget->exprs) ==
+			   list_length(cheapest_total_path->pathtarget->exprs));
+		subpath->pathtarget->sortgrouprefs = cheapest_total_path->pathtarget->sortgrouprefs;
+
+		if (can_sort)
+		{
+			int presorted_keys;
+			bool is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
+														 subpath->pathkeys,
+														 &presorted_keys);
+
+			/* Use a copy of the subpath because it might get modified (i.e., sorted) */
+			Path *sorted_path = subpath;
+
+			if (!is_sorted)
+			{
+				sorted_path = (Path *) create_sort_path(root,
+														subpath->parent,
+														sorted_path,
+														root->group_pathkeys,
+														-1.0);
+			}
+
+			Path *sorted_agg_path =
+				(Path *) create_agg_path(root,
+										 sorted_path->parent,
+										 sorted_path,
+										 mypartialtarget,
+										 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+										 AGGSPLIT_INITIAL_SERIAL,
+										 parse->groupClause,
+										 NIL,
+										 agg_partial_costs,
+										 d_num_groups);
+
+			sorted_subpaths = lappend(sorted_subpaths, sorted_agg_path);
+		}
+
+		if (can_hash)
+		{
+			Path *hash_path = (Path *) create_agg_path(root,
+													   subpath->parent,
+													   subpath,
+													   mypartialtarget,
+													   AGG_HASHED,
+													   AGGSPLIT_INITIAL_SERIAL,
+													   parse->groupClause,
+													   NIL,
+													   agg_partial_costs,
+													   d_num_groups);
+
+			hashed_subpaths = lappend(hashed_subpaths, hash_path);
+		}
+	}
+
+	/* Create new append paths */
+	cheapest_total_path->pathtarget = partial_grouping_target;
+
+	List *new_append_paths = NIL;
+
+	if (IsA(cheapest_total_path, AppendPath))
+	{
+		AppendPath *append_path = castNode(AppendPath, cheapest_total_path);
+		if (sorted_subpaths != NIL)
+		{
+			AppendPath *new_agg_path = copy_append_path(append_path, sorted_subpaths);
+			new_append_paths = lappend(new_append_paths, new_agg_path);
+		}
+
+		if (hashed_subpaths != NIL)
+		{
+			AppendPath *new_agg_path = copy_append_path(append_path, hashed_subpaths);
+			new_append_paths = lappend(new_append_paths, new_agg_path);
+		}
+	}
+	else if (IsA(cheapest_total_path, MergeAppendPath))
+	{
+		MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_total_path);
+		if (sorted_subpaths != NIL)
+		{
+			MergeAppendPath *new_agg_path =
+				copy_merge_append_path(root, merge_append_path, sorted_subpaths);
+			new_append_paths = lappend(new_append_paths, new_agg_path);
+		}
+
+		if (hashed_subpaths != NIL)
+		{
+			MergeAppendPath *new_agg_path =
+				copy_merge_append_path(root, merge_append_path, hashed_subpaths);
+			new_append_paths = lappend(new_append_paths, new_agg_path);
+		}
+	}
+	else if (ts_is_chunk_append_path(cheapest_total_path))
+	{
+		CustomPath *custom_path = castNode(CustomPath, cheapest_total_path);
+		ChunkAppendPath *chunk_append_path = (ChunkAppendPath *) custom_path;
+		if (sorted_subpaths != NIL)
+		{
+			ChunkAppendPath *new_agg_path =
+				ts_chunk_append_path_copy(chunk_append_path, sorted_subpaths);
+			new_append_paths = lappend(new_append_paths, new_agg_path);
+		}
+
+		if (hashed_subpaths != NIL)
+		{
+			ChunkAppendPath *new_agg_path =
+				ts_chunk_append_path_copy(chunk_append_path, hashed_subpaths);
+			new_append_paths = lappend(new_append_paths, new_agg_path);
+		}
+	}
+	else
+	{
+		/* Should never happen, already checked above */
+		Ensure(false, "Unknown path type");
+	}
+
+	/* Finalize append paths */
+	foreach (lc, new_append_paths)
+	{
+		Path *append_path = lfirst(lc);
+		List *subpaths = get_subpaths_from_append_path(append_path);
+		Assert(subpaths != NIL);
+
+		AggPath *agg_path = castNode(AggPath, linitial(subpaths));
+
+		if (agg_path->aggstrategy != AGG_HASHED)
+		{
+			add_path(output_rel,
+					 (Path *) create_agg_path(root,
+											  output_rel,
+											  append_path,
+											  grouping_target,
+											  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											  AGGSPLIT_FINAL_DESERIAL,
+											  parse->groupClause,
+											  (List *) parse->havingQual,
+											  agg_final_costs,
+											  d_num_groups));
+		}
+		else
+		{
+			add_path(output_rel,
+					 (Path *) create_agg_path(root,
+											  output_rel,
+											  append_path,
+											  grouping_target,
+											  AGG_HASHED,
+											  AGGSPLIT_FINAL_DESERIAL,
+											  parse->groupClause,
+											  (List *) parse->havingQual,
+											  agg_final_costs,
+											  d_num_groups));
+		}
+	}
 }
 
 /*
@@ -294,7 +484,7 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 	AggClauseCosts *agg_partial_costs = &extra_data->agg_partial_costs;
 	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
 
-	/* Get and iterate over sub paths */
+	/* Get subpaths */
 	List *subpaths = get_subpaths_from_append_path(cheapest_partial_path);
 
 	/* No subpaths available or unsupported append node */
@@ -302,10 +492,7 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		return;
 
 	/* Replan aggregation path */
-	output_rel->pathlist = NIL;
 	output_rel->partial_pathlist = NIL;
-
-	Assert(subpaths != NIL);
 
 	/* Generate agg paths on top of the append children */
 	ListCell *lc;
@@ -578,6 +765,7 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 							   output_rel,
 							   partially_grouped_rel,
 							   grouping_target,
+							   partial_grouping_target,
 							   can_sort,
 							   can_hash,
 							   d_num_groups,
