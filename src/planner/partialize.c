@@ -21,6 +21,7 @@
 #include <utils/lsyscache.h>
 
 #include "debug_assert.h"
+#include "partialize.h"
 #include "planner.h"
 #include "nodes/print.h"
 #include "extension_constants.h"
@@ -269,9 +270,24 @@ copy_merge_append_path(PlannerInfo *root, MergeAppendPath *path, List *subpaths)
 	return newPath;
 }
 
-static void
-pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
-					 RelOptInfo *output_rel, void *extra)
+/*
+ * Convert the aggregation into a partial aggregation and push them down to the chunk level
+ *
+ * Inspired by PostgreSQL's create_partitionwise_grouping_paths() function
+ *
+ * Generated aggregation paths:
+ *
+ * Finalize Aggregate
+ *   -> Append
+ *      -> Partial Aggregation 1
+ *        - Chunk 1
+ *      ...
+ *      -> Partial Aggregation N
+ *        - Chunk N
+ */
+void
+ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel,
+						RelOptInfo *output_rel, void *extra)
 {
 	Query *parse = root->parse;
 
@@ -586,12 +602,6 @@ ts_plan_process_partialize_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *in
 
 	found_partialize_agg_func =
 		has_partialize_function((Node *) parse->targetList, TS_DO_NOT_FIX_AGGSPLIT);
-
-	/* Based on PostgreSQL's create_partitionwise_grouping_paths() */
-	if (ts_guc_enable_vectorized_aggregation && !found_partialize_agg_func)
-	{
-		pushdown_partial_agg(root, ht, input_rel, output_rel, extra);
-	}
 
 	if (!found_partialize_agg_func)
 		return false;
