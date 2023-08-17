@@ -378,14 +378,14 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 		AppendPath *append_path = castNode(AppendPath, cheapest_total_path);
 		if (sorted_subpaths != NIL)
 		{
-			AppendPath *new_agg_path = copy_append_path(append_path, sorted_subpaths);
-			add_path(partially_grouped_rel, (Path *) new_agg_path);
+			add_path(partially_grouped_rel,
+					 (Path *) copy_append_path(append_path, sorted_subpaths));
 		}
 
 		if (hashed_subpaths != NIL)
 		{
-			AppendPath *new_agg_path = copy_append_path(append_path, hashed_subpaths);
-			add_path(partially_grouped_rel, (Path *) new_agg_path);
+			add_path(partially_grouped_rel,
+					 (Path *) copy_append_path(append_path, hashed_subpaths));
 		}
 	}
 	else if (IsA(cheapest_total_path, MergeAppendPath))
@@ -393,16 +393,14 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 		MergeAppendPath *merge_append_path = castNode(MergeAppendPath, cheapest_total_path);
 		if (sorted_subpaths != NIL)
 		{
-			MergeAppendPath *new_agg_path =
-				copy_merge_append_path(root, merge_append_path, sorted_subpaths);
-			add_path(partially_grouped_rel, (Path *) new_agg_path);
+			add_path(partially_grouped_rel,
+					 (Path *) copy_merge_append_path(root, merge_append_path, sorted_subpaths));
 		}
 
 		if (hashed_subpaths != NIL)
 		{
-			MergeAppendPath *new_agg_path =
-				copy_merge_append_path(root, merge_append_path, hashed_subpaths);
-			add_path(partially_grouped_rel, (Path *) new_agg_path);
+			add_path(partially_grouped_rel,
+					 (Path *) copy_merge_append_path(root, merge_append_path, hashed_subpaths));
 		}
 	}
 	else if (ts_is_chunk_append_path(cheapest_total_path))
@@ -411,16 +409,14 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 		ChunkAppendPath *chunk_append_path = (ChunkAppendPath *) custom_path;
 		if (sorted_subpaths != NIL)
 		{
-			ChunkAppendPath *new_agg_path =
-				ts_chunk_append_path_copy(chunk_append_path, sorted_subpaths);
-			add_path(partially_grouped_rel, (Path *) new_agg_path);
+			add_path(partially_grouped_rel,
+					 (Path *) ts_chunk_append_path_copy(chunk_append_path, sorted_subpaths));
 		}
 
 		if (hashed_subpaths != NIL)
 		{
-			ChunkAppendPath *new_agg_path =
-				ts_chunk_append_path_copy(chunk_append_path, hashed_subpaths);
-			add_path(partially_grouped_rel, (Path *) new_agg_path);
+			add_path(partially_grouped_rel,
+					 (Path *) ts_chunk_append_path_copy(chunk_append_path, hashed_subpaths));
 		}
 	}
 	else
@@ -530,9 +526,7 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 	}
 
 	/* Create new append paths */
-	double total_groups = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
 	cheapest_partial_path->pathtarget = partial_grouping_target;
-
 	List *new_append_paths = NIL;
 
 	if (IsA(cheapest_partial_path, AppendPath))
@@ -595,6 +589,8 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 	foreach (lc, new_append_paths)
 	{
 		Path *append_path = lfirst(lc);
+		double total_groups = append_path->rows * append_path->parallel_workers;
+
 		Path *gather_path = (Path *) create_gather_path(root,
 														partially_grouped_rel,
 														append_path,
@@ -711,14 +707,15 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 										   d_num_groups,
 										   extra_data);
 
-	/* Replan if we were able to generate partially grouped rel plans */
+	/* Replan if we were able to generate partially grouped rel paths */
 	if (partially_grouped_rel->pathlist == NIL)
 		return;
 
+	/* Prefer our paths */
 	output_rel->pathlist = NIL;
 	output_rel->partial_pathlist = NIL;
 
-	/* Finalize append paths */
+	/* Finalize partially aggregated append paths */
 	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
 	ListCell *lc;
 	foreach (lc, partially_grouped_rel->pathlist)
