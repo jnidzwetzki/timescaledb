@@ -216,7 +216,7 @@ get_existing_agg_path(RelOptInfo *output_rel)
 
 /* Get all subpaths from a Append, MergeAppend, or ChunkAppend path */
 static List *
-get_subpaths_from_append_path(Path *path)
+get_subpaths_from_append_path(Path *path, bool handle_gather_path)
 {
 	if (IsA(path, AppendPath))
 	{
@@ -232,6 +232,10 @@ get_subpaths_from_append_path(Path *path)
 	{
 		CustomPath *custom_path = castNode(CustomPath, path);
 		return custom_path->custom_paths;
+	}
+	else if (handle_gather_path && IsA(path, GatherPath))
+	{
+		return get_subpaths_from_append_path(castNode(GatherPath, path)->subpath, false);
 	}
 
 	/* Aggregation push-down is not supported for other path types so far */
@@ -283,10 +287,9 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 
 	/* Determine costs for aggregations */
 	AggClauseCosts *agg_partial_costs = &extra_data->agg_partial_costs;
-	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
 
 	/* Get subpaths */
-	List *subpaths = get_subpaths_from_append_path(cheapest_total_path);
+	List *subpaths = get_subpaths_from_append_path(cheapest_total_path, false);
 
 	/* No subpaths available or unsupported append node */
 	if (subpaths == NIL)
@@ -370,21 +373,19 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 	/* Create new append paths */
 	cheapest_total_path->pathtarget = partial_grouping_target;
 
-	List *new_append_paths = NIL;
-
 	if (IsA(cheapest_total_path, AppendPath))
 	{
 		AppendPath *append_path = castNode(AppendPath, cheapest_total_path);
 		if (sorted_subpaths != NIL)
 		{
 			AppendPath *new_agg_path = copy_append_path(append_path, sorted_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			AppendPath *new_agg_path = copy_append_path(append_path, hashed_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 	}
 	else if (IsA(cheapest_total_path, MergeAppendPath))
@@ -394,14 +395,14 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 		{
 			MergeAppendPath *new_agg_path =
 				copy_merge_append_path(root, merge_append_path, sorted_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			MergeAppendPath *new_agg_path =
 				copy_merge_append_path(root, merge_append_path, hashed_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 	}
 	else if (ts_is_chunk_append_path(cheapest_total_path))
@@ -412,59 +413,20 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 		{
 			ChunkAppendPath *new_agg_path =
 				ts_chunk_append_path_copy(chunk_append_path, sorted_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			ChunkAppendPath *new_agg_path =
 				ts_chunk_append_path_copy(chunk_append_path, hashed_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 	}
 	else
 	{
 		/* Should never happen, already checked above */
 		Ensure(false, "Unknown path type");
-	}
-
-	/* Finalize append paths */
-	foreach (lc, new_append_paths)
-	{
-		Path *append_path = lfirst(lc);
-		List *subpaths = get_subpaths_from_append_path(append_path);
-		Assert(subpaths != NIL);
-
-		AggPath *agg_path = castNode(AggPath, linitial(subpaths));
-
-		if (agg_path->aggstrategy != AGG_HASHED)
-		{
-			add_path(output_rel,
-					 (Path *) create_agg_path(root,
-											  output_rel,
-											  append_path,
-											  grouping_target,
-											  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-											  AGGSPLIT_FINAL_DESERIAL,
-											  parse->groupClause,
-											  (List *) parse->havingQual,
-											  agg_final_costs,
-											  d_num_groups));
-		}
-		else
-		{
-			add_path(output_rel,
-					 (Path *) create_agg_path(root,
-											  output_rel,
-											  append_path,
-											  grouping_target,
-											  AGG_HASHED,
-											  AGGSPLIT_FINAL_DESERIAL,
-											  parse->groupClause,
-											  (List *) parse->havingQual,
-											  agg_final_costs,
-											  d_num_groups));
-		}
 	}
 }
 
@@ -482,10 +444,9 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 
 	/* Determine costs for aggregations */
 	AggClauseCosts *agg_partial_costs = &extra_data->agg_partial_costs;
-	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
 
 	/* Get subpaths */
-	List *subpaths = get_subpaths_from_append_path(cheapest_partial_path);
+	List *subpaths = get_subpaths_from_append_path(cheapest_partial_path, false);
 
 	/* No subpaths available or unsupported append node */
 	if (subpaths == NIL)
@@ -630,51 +591,17 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		Ensure(false, "Unknown path type");
 	}
 
-	/* Finalize append paths */
+	/* Finish partial paths by adding a gather node */
 	foreach (lc, new_append_paths)
 	{
 		Path *append_path = lfirst(lc);
-
 		Path *gather_path = (Path *) create_gather_path(root,
 														partially_grouped_rel,
 														append_path,
 														partially_grouped_rel->reltarget,
 														NULL,
 														&total_groups);
-
-		List *subpaths = get_subpaths_from_append_path(append_path);
-		Assert(subpaths != NIL);
-
-		AggPath *agg_path = castNode(AggPath, linitial(subpaths));
-
-		if (agg_path->aggstrategy != AGG_HASHED)
-		{
-			add_path(output_rel,
-					 (Path *) create_agg_path(root,
-											  output_rel,
-											  gather_path,
-											  grouping_target,
-											  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-											  AGGSPLIT_FINAL_DESERIAL,
-											  parse->groupClause,
-											  (List *) parse->havingQual,
-											  agg_final_costs,
-											  d_num_groups));
-		}
-		else
-		{
-			add_path(output_rel,
-					 (Path *) create_agg_path(root,
-											  output_rel,
-											  gather_path,
-											  grouping_target,
-											  AGG_HASHED,
-											  AGGSPLIT_FINAL_DESERIAL,
-											  parse->groupClause,
-											  (List *) parse->havingQual,
-											  agg_final_costs,
-											  d_num_groups));
-		}
+		add_path(partially_grouped_rel, (Path *) gather_path);
 	}
 }
 
@@ -783,6 +710,54 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 										   can_hash,
 										   d_num_groups,
 										   extra_data);
+
+	/* Replan if we were able to generate partially grouped rel plans */
+	if (partially_grouped_rel->pathlist == NIL)
+		return;
+
+	output_rel->pathlist = NIL;
+	output_rel->partial_pathlist = NIL;
+
+	/* Finalize append paths */
+	AggClauseCosts *agg_final_costs = &extra_data->agg_final_costs;
+	ListCell *lc;
+	foreach (lc, partially_grouped_rel->pathlist)
+	{
+		Path *append_path = lfirst(lc);
+		List *subpaths = get_subpaths_from_append_path(append_path, true);
+		Assert(subpaths != NIL);
+
+		AggPath *agg_path = castNode(AggPath, linitial(subpaths));
+
+		if (agg_path->aggstrategy != AGG_HASHED)
+		{
+			add_path(output_rel,
+					 (Path *) create_agg_path(root,
+											  output_rel,
+											  append_path,
+											  grouping_target,
+											  parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											  AGGSPLIT_FINAL_DESERIAL,
+											  parse->groupClause,
+											  (List *) parse->havingQual,
+											  agg_final_costs,
+											  d_num_groups));
+		}
+		else
+		{
+			add_path(output_rel,
+					 (Path *) create_agg_path(root,
+											  output_rel,
+											  append_path,
+											  grouping_target,
+											  AGG_HASHED,
+											  AGGSPLIT_FINAL_DESERIAL,
+											  parse->groupClause,
+											  (List *) parse->havingQual,
+											  agg_final_costs,
+											  d_num_groups));
+		}
+	}
 }
 
 /*
