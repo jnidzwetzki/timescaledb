@@ -527,7 +527,7 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 
 	/* Create new append paths */
 	cheapest_partial_path->pathtarget = partial_grouping_target;
-	List *new_append_paths = NIL;
+	partially_grouped_rel->partial_pathlist = NIL;
 
 	if (IsA(cheapest_partial_path, AppendPath))
 	{
@@ -535,13 +535,13 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		if (sorted_subpaths != NIL)
 		{
 			AppendPath *new_agg_path = copy_append_path(append_path, sorted_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			AppendPath *new_agg_path = copy_append_path(append_path, hashed_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
 		}
 	}
 	else if (IsA(cheapest_partial_path, MergeAppendPath))
@@ -551,14 +551,14 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		{
 			MergeAppendPath *new_agg_path =
 				copy_merge_append_path(root, merge_append_path, sorted_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			MergeAppendPath *new_agg_path =
 				copy_merge_append_path(root, merge_append_path, hashed_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
 		}
 	}
 	else if (ts_is_chunk_append_path(cheapest_partial_path))
@@ -569,14 +569,14 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		{
 			ChunkAppendPath *new_agg_path =
 				ts_chunk_append_path_copy(chunk_append_path, sorted_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			ChunkAppendPath *new_agg_path =
 				ts_chunk_append_path_copy(chunk_append_path, hashed_subpaths);
-			new_append_paths = lappend(new_append_paths, new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
 		}
 	}
 	else
@@ -586,7 +586,7 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 	}
 
 	/* Finish partial paths by adding a gather node */
-	foreach (lc, new_append_paths)
+	foreach (lc, partially_grouped_rel->partial_pathlist)
 	{
 		Path *append_path = lfirst(lc);
 		double total_groups = append_path->rows * append_path->parallel_workers;
