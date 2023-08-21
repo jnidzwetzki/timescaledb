@@ -664,6 +664,10 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 	if (existing_agg_path == NULL)
 		return;
 
+	/* Skip partial aggregations created by _timescaledb_internal.partialize_agg */
+	if(existing_agg_path->aggsplit == AGGSPLIT_INITIAL_SERIAL)
+		return;
+
 	double d_num_groups = existing_agg_path->numGroups;
 	Assert(d_num_groups > 0);
 
