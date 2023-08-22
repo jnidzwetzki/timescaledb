@@ -535,13 +535,13 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		if (sorted_subpaths != NIL)
 		{
 			AppendPath *new_agg_path = copy_append_path(append_path, sorted_subpaths);
-			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			AppendPath *new_agg_path = copy_append_path(append_path, hashed_subpaths);
-			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 	}
 	else if (IsA(cheapest_partial_path, MergeAppendPath))
@@ -551,14 +551,14 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		{
 			MergeAppendPath *new_agg_path =
 				copy_merge_append_path(root, merge_append_path, sorted_subpaths);
-			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			MergeAppendPath *new_agg_path =
 				copy_merge_append_path(root, merge_append_path, hashed_subpaths);
-			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 	}
 	else if (ts_is_chunk_append_path(cheapest_partial_path))
@@ -569,14 +569,14 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 		{
 			ChunkAppendPath *new_agg_path =
 				ts_chunk_append_path_copy(chunk_append_path, sorted_subpaths);
-			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 
 		if (hashed_subpaths != NIL)
 		{
 			ChunkAppendPath *new_agg_path =
 				ts_chunk_append_path_copy(chunk_append_path, hashed_subpaths);
-			add_partial_path(partially_grouped_rel, (Path*) new_agg_path);
+			add_partial_path(partially_grouped_rel, (Path *) new_agg_path);
 		}
 	}
 	else
@@ -665,7 +665,7 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 		return;
 
 	/* Skip partial aggregations created by _timescaledb_internal.partialize_agg */
-	if(existing_agg_path->aggsplit == AGGSPLIT_INITIAL_SERIAL)
+	if (existing_agg_path->aggsplit == AGGSPLIT_INITIAL_SERIAL)
 		return;
 
 	double d_num_groups = existing_agg_path->numGroups;
@@ -732,6 +732,19 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 
 		if (agg_path->aggstrategy != AGG_HASHED)
 		{
+			bool is_sorted;
+			int presorted_keys;
+
+			is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
+													append_path->pathkeys,
+													&presorted_keys);
+
+			if (!is_sorted)
+			{
+				append_path = (Path *)
+					create_sort_path(root, output_rel, append_path, root->group_pathkeys, -1.0);
+			}
+
 			add_path(output_rel,
 					 (Path *) create_agg_path(root,
 											  output_rel,
