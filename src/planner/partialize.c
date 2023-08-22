@@ -275,7 +275,7 @@ copy_merge_append_path(PlannerInfo *root, MergeAppendPath *path, List *subpaths)
 }
 
 /*
- * Generate a total aggregation path
+ * Generate a total aggregation path for partial aggregations
  */
 static void
 generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptInfo *output_rel,
@@ -427,7 +427,7 @@ generate_agg_pushdown_path(PlannerInfo *root, Path *cheapest_total_path, RelOptI
 }
 
 /*
- * Generate a partial aggregation path
+ * Generate a partial aggregation path for partial aggregations
  */
 static void
 generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_path,
@@ -582,7 +582,7 @@ generate_partial_agg_pushdown_path(PlannerInfo *root, Path *cheapest_partial_pat
 	else
 	{
 		/* Should never happen, already checked above */
-		Ensure(false, "Unknown path type");
+		Ensure(false, "Unable to create partial aggregates - unknown path type");
 	}
 
 	/* Finish partial paths by adding a gather node */
@@ -653,7 +653,7 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 #endif
 		return;
 
-	/* Construct aggregation paths with partial aggregate pushdown */
+	/* Use the cheapest_total_path to construct aggregation paths with partial aggregate pushdown */
 	Path *cheapest_total_path = input_rel->cheapest_total_path;
 	Assert(cheapest_total_path != NULL);
 
