@@ -82,7 +82,7 @@ TSDLLEXPORT bool ts_guc_enable_decompression_sorted_merge = true;
 bool ts_guc_enable_per_data_node_queries = true;
 bool ts_guc_enable_parameterized_data_node_scan = true;
 bool ts_guc_enable_async_append = true;
-bool ts_guc_enable_vectorized_aggregation = true;
+bool ts_guc_enable_partitionwise_aggregation = true;
 TSDLLEXPORT bool ts_guc_enable_compression_indexscan = true;
 TSDLLEXPORT bool ts_guc_enable_bulk_decompression = true;
 TSDLLEXPORT bool ts_guc_enable_skip_scan = true;
@@ -536,11 +536,11 @@ _guc_init(void)
 							 NULL,
 							 NULL);
 
-	DefineCustomBoolVariable("timescaledb.enable_vectorized_aggregation",
-							 "Enable vectorized aggregations",
+	DefineCustomBoolVariable("timescaledb.enable_partitionwise_aggregation",
+							 "Enable partition-wise aggregation per chunk",
 							 "Enable the partition-wise aggregation pushdown to the"
-							 "chunk level and vectorized aggregations",
-							 &ts_guc_enable_vectorized_aggregation,
+							 "chunk level",
+							 &ts_guc_enable_partitionwise_aggregation,
 							 true,
 							 PGC_USERSET,
 							 0,

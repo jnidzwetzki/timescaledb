@@ -1548,7 +1548,7 @@ timescaledb_create_upper_paths_hook(PlannerInfo *root, UpperRelationKind stage,
 		if (parse->hasAggs)
 			ts_preprocess_first_last_aggregates(root, root->processed_tlist);
 
-		if (ts_guc_enable_vectorized_aggregation)
+		if (ts_guc_enable_partitionwise_aggregation)
 			ts_pushdown_partial_agg(root, ht, input_rel, output_rel, extra);
 	}
 }
