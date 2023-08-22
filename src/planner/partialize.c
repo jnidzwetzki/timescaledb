@@ -634,10 +634,6 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 	if (parse->groupingSets)
 		return;
 
-	/* Insufficient support for partial mode. */
-	if (root->hasNonPartialAggs || root->hasNonSerialAggs)
-		return;
-
 	/* No partial paths are available to construct the input relation, no partial aggregation
 	 * possible */
 	if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
@@ -653,6 +649,14 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 
 	Assert(extra != NULL);
 	GroupPathExtraData *extra_data = (GroupPathExtraData *) extra;
+
+/* Don't replan aggregation if it contains already partials or non-serializable aggregates */
+#if PG14_LT
+	if (extra_data->agg_partial_costs.hasNonPartial || extra_data->agg_partial_costs.hasNonSerial)
+#else
+	if (root->hasNonPartialAggs || root->hasNonSerialAggs)
+#endif
+		return;
 
 	/* Construct aggregation paths with partial aggregate pushdown */
 	Path *cheapest_total_path = input_rel->cheapest_total_path;
