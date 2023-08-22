@@ -634,11 +634,6 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 	if (parse->groupingSets)
 		return;
 
-	/* No partial paths are available to construct the input relation, no partial aggregation
-	 * possible */
-	if (!input_rel->consider_parallel || !input_rel->partial_pathlist)
-		return;
-
 	bool can_sort = grouping_is_sortable(parse->groupClause);
 	bool can_hash = grouping_is_hashable(parse->groupClause) &&
 					!parse->groupingSets; /* see consider_groupingsets_paths */
@@ -660,7 +655,6 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 
 	/* Construct aggregation paths with partial aggregate pushdown */
 	Path *cheapest_total_path = input_rel->cheapest_total_path;
-	Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 	Assert(cheapest_total_path != NULL);
 
 	/* Determine the number of groups from the already planned aggregation */
@@ -703,7 +697,9 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 							   extra_data);
 
 	/* The same as above but for partial paths */
-	if (cheapest_partial_path != NULL)
+	if (input_rel->partial_pathlist != NIL && input_rel->consider_parallel)
+	{
+		Path *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 		generate_partial_agg_pushdown_path(root,
 										   cheapest_partial_path,
 										   output_rel,
@@ -714,6 +710,7 @@ ts_pushdown_partial_agg(PlannerInfo *root, Hypertable *ht, RelOptInfo *input_rel
 										   can_hash,
 										   d_num_groups,
 										   extra_data);
+	}
 
 	/* Replan if we were able to generate partially grouped rel paths */
 	if (partially_grouped_rel->pathlist == NIL)
