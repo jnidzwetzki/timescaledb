@@ -64,7 +64,9 @@ static const char *reloptkind_name[] = {
 	[RELOPT_OTHER_JOINREL] = "OTHER_JOINREL",
 	[RELOPT_UPPER_REL] = "UPPER_REL",
 	[RELOPT_OTHER_UPPER_REL] = "OTHER_UPPER_REL",
+#if PG16_LT
 	[RELOPT_DEADREL] = "DEADREL",
+#endif
 };
 
 /* clang-format off */
@@ -242,7 +244,7 @@ append_relids(StringInfo buf, PlannerInfo *root, Relids relids)
 }
 
 static void
-append_pathkeys(StringInfo buf, const List *pathkeys, const List *rtable)
+ts_append_pathkeys(StringInfo buf, const List *pathkeys, const List *rtable)
 {
 	const ListCell *i;
 
@@ -433,7 +435,7 @@ tsl_debug_append_path(StringInfo buf, PlannerInfo *root, Path *path, int indent)
 	if (path->pathkeys)
 	{
 		appendStringInfoString(buf, " with pathkeys: ");
-		append_pathkeys(buf, path->pathkeys, root->parse->rtable);
+		ts_append_pathkeys(buf, path->pathkeys, root->parse->rtable);
 	}
 
 	appendStringInfoString(buf, "\n");

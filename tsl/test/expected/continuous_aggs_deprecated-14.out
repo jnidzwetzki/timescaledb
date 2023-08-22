@@ -1598,7 +1598,7 @@ insert into raw_data select '2001-05-10 00:00+0','Q3', 100, 100;
 --this should succeed since it does not refresh any compressed regions in the cagg
 CALL refresh_continuous_aggregate('search_query_count_3', '2001-05-01 00:00+0'::timestamptz, '2001-06-01 00:00+0'::timestamptz);
 --verify watermark and check that chunks are compressed
-SELECT _timescaledb_internal.to_timestamp(w) FROM _timescaledb_internal.cagg_watermark(:'MAT_HTID') w;
+SELECT _timescaledb_functions.to_timestamp(w) FROM _timescaledb_internal.cagg_watermark(:'MAT_HTID') w;
          to_timestamp         
 ------------------------------
  Wed May 09 17:01:00 2001 PDT
@@ -1951,7 +1951,7 @@ Indexes:
     "_materialized_hypertable_53_amount_bucket_idx" btree (amount, bucket DESC)
     "_materialized_hypertable_53_bucket_idx" btree (bucket DESC)
 Triggers:
-    ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_53 FOR EACH ROW EXECUTE FUNCTION _timescaledb_internal.insert_blocker()
+    ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_53 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker()
 Child tables: _timescaledb_internal._hyper_53_114_chunk,
               _timescaledb_internal._hyper_53_115_chunk
 
