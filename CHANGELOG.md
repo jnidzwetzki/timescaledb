@@ -12,14 +12,21 @@ available opportunity.
  
 In addition, it includes these noteworthy features:
 
-* PG16 support
+* Full PostgreSQL 16 support for all existing features.
 * Vectorized aggregation execution for sum()
 * Track chunk creation time used in retention/compression policies
 
+**Deprecation notice: Multi-node support**
+
+TimescaleDB 2.13 is the last version that will include multi-node support. Multi-node support in 2.13 is available for PostgreSQL 13, 14 and 15.
+Learn more about it [here](docs/MultiNodeDeprecation.md).
+
+If you want to migrate from multi-node TimescaleDB to single-node TimescaleDB read the [migration documentation](https://docs.timescale.com/migrate/latest/multi-node-to-timescale-service/).
+
 **Starting from TimescaleDB 2.13.0:**
 
-* no Amazon Machine Images (AMI) are published. If you previously used AMI, please 
-use another [installation method] (https://docs.timescale.com/self-hosted/latest/install/).
+* No Amazon Machine Images (AMI) are published. If you previously used AMI, please 
+use another [installation method](https://docs.timescale.com/self-hosted/latest/install/).
 * Continuous Aggregates are materialized only (non-realtime) by default.
 
 **Features**
