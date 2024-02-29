@@ -1120,3 +1120,30 @@ SELECT compress_chunk(:'CHUNK2');
 -- should return no rows
 SELECT * FROM ONLY :CHUNK2;
 
+------
+--- Test copy with a compressed table with unique index
+------
+
+CREATE TABLE compressed_table (time timestamptz, a int);
+CREATE UNIQUE INDEX compressed_table_index ON compressed_table(time, a);
+
+SELECT create_hypertable('compressed_table', 'time');
+ALTER TABLE compressed_table SET (timescaledb.compress, timescaledb.compress_segmentby='a', timescaledb.compress_orderby = 'time DESC');
+
+COPY compressed_table (time,a) FROM stdin;
+2024-02-29 15:02:03.87313+01	10
+\.
+
+SELECT compress_chunk(i, if_not_compressed => true) FROM show_chunks('compressed_table') i;
+
+\set ON_ERROR_STOP 0
+COPY compressed_table (time,a) FROM stdin;
+2024-02-29 15:02:03.87313+01	10
+\.
+\set ON_ERROR_STOP 1
+
+COPY compressed_table (time,a) FROM stdin;
+2024-02-29 15:02:03.87313+01	20
+\.
+
+SELECT * FROM compressed_table;

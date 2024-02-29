@@ -2771,3 +2771,35 @@ SELECT * FROM ONLY :CHUNK2;
 ------+--------+-------
 (0 rows)
 
+------
+--- Test copy with a compressed table with unique index
+------
+CREATE TABLE compressed_table (time timestamptz, a int);
+CREATE UNIQUE INDEX compressed_table_index ON compressed_table(time, a);
+SELECT create_hypertable('compressed_table', 'time');
+NOTICE:  adding not-null constraint to column "time"
+       create_hypertable        
+--------------------------------
+ (49,public,compressed_table,t)
+(1 row)
+
+ALTER TABLE compressed_table SET (timescaledb.compress, timescaledb.compress_segmentby='a', timescaledb.compress_orderby = 'time DESC');
+COPY compressed_table (time,a) FROM stdin;
+SELECT compress_chunk(i, if_not_compressed => true) FROM show_chunks('compressed_table') i;
+              compress_chunk               
+-------------------------------------------
+ _timescaledb_internal._hyper_49_108_chunk
+(1 row)
+
+\set ON_ERROR_STOP 0
+COPY compressed_table (time,a) FROM stdin;
+ERROR:  duplicate key value violates unique constraint "_hyper_49_108_chunk_compressed_table_index"
+\set ON_ERROR_STOP 1
+COPY compressed_table (time,a) FROM stdin;
+SELECT * FROM compressed_table;
+                time                | a  
+------------------------------------+----
+ Thu Feb 29 06:02:03.87313 2024 PST | 20
+ Thu Feb 29 06:02:03.87313 2024 PST | 10
+(2 rows)
+
