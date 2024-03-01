@@ -2356,13 +2356,9 @@ decompress_batches_for_insert(const ChunkInsertState *cis, TupleTableSlot *slot)
 									false);
 		Assert(result == TM_Ok);
 
-		/* dispatch_state is not present in the COPY path. See the definition of the ChunkDispatch
-		 * struct for more details. */
-		if (cis->cds != NULL)
-		{
-			cis->cds->batches_decompressed += decompressor.batches_decompressed;
-			cis->cds->tuples_decompressed += decompressor.tuples_decompressed;
-		}
+		Assert(cis->cds != NULL);
+		cis->cds->batches_decompressed += decompressor.batches_decompressed;
+		cis->cds->tuples_decompressed += decompressor.tuples_decompressed;
 	}
 
 	table_endscan(scan);
